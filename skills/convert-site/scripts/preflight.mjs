@@ -37,11 +37,13 @@ Options:
                      parent of the current directory and the home directory
   --path-env <PATH>  look up and run the CLIs with this PATH instead of $PATH
 
-Each probe times out after 10 s. Tokens and login output are never printed.
-Test hook: PREFLIGHT_PROBE_TIMEOUT_MS=<ms> overrides the 10 s probe timeout.
+Each probe times out after 30 s (a cold \`npx vercel\` can take that long). A login probe
+with no answer is reported as timedOut: true (loggedIn false), printed as "login unknown"
+with the command to run yourself, never as logged out. Tokens and login output are never printed.
+Test hook: PREFLIGHT_PROBE_TIMEOUT_MS=<ms> overrides the 30 s probe timeout.
 Exit codes: 0 report printed, 2 usage error.`;
 
-const DEFAULT_PROBE_TIMEOUT_MS = 10_000;
+const DEFAULT_PROBE_TIMEOUT_MS = 30_000;
 const timeoutOverride = Number.parseInt(process.env.PREFLIGHT_PROBE_TIMEOUT_MS ?? '', 10);
 const PROBE_TIMEOUT_MS = timeoutOverride > 0 ? timeoutOverride : DEFAULT_PROBE_TIMEOUT_MS;
 const MAX_OUTPUT = 64 * 1024;
@@ -94,11 +96,11 @@ function probe(file, args, pathEnv) {
   return new Promise((resolve) => {
     let output = '';
     let settled = false;
-    const finish = (code) => {
+    const finish = (code, timedOut = false) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve({ code, output });
+      resolve({ code, output, timedOut });
     };
     let child;
     try {
@@ -124,7 +126,7 @@ function probe(file, args, pathEnv) {
       } catch {
         child.kill('SIGKILL');
       }
-      finish(null);
+      finish(null, true);
     }, PROBE_TIMEOUT_MS);
   });
 }
@@ -135,9 +137,13 @@ async function checkTool(name, loginArgs, pathEnv) {
   const versionRun = await probe(file, ['--version'], pathEnv);
   const version = versionRun.output.match(/\d+\.\d+\.\d+/)?.[0] ?? null;
   if (!loginArgs) return { present: true, version, loggedIn: null };
-  const login = await probe(file, loginArgs, pathEnv);
+  return { present: true, version, ...loginOf(await probe(file, loginArgs, pathEnv)) };
+}
+
+// A login probe's answer; one that timed out is not "logged out", so it says so.
+function loginOf(login) {
   const loggedIn = login.code === 0 && !NOT_LOGGED_IN_RE.test(login.output);
-  return { present: true, version, loggedIn };
+  return login.timedOut ? { loggedIn, timedOut: true } : { loggedIn };
 }
 
 // The CLIs the skill runs through npx: what `npx --no-install <cli>` answers is what the agent
@@ -146,18 +152,21 @@ const VIA_NPX = new Set(['vercel', 'wrangler']);
 
 async function checkNpxTool(name, loginArgs, pathEnv) {
   const npx = findBinary('npx', pathEnv);
+  let npxTimedOut = false;
   if (npx) {
     const versionRun = await probe(npx, ['--no-install', name, '--version'], pathEnv);
+    npxTimedOut = versionRun.timedOut;
     if (versionRun.code === 0) {
       const version = versionRun.output.match(/\d+\.\d+\.\d+/)?.[0] ?? null;
-      const login = await probe(npx, ['--no-install', name, ...loginArgs], pathEnv);
-      const loggedIn = login.code === 0 && !NOT_LOGGED_IN_RE.test(login.output);
-      return { present: true, version, loggedIn, via: 'npx', run: (args) => probe(npx, ['--no-install', name, ...args], pathEnv) };
+      const login = loginOf(await probe(npx, ['--no-install', name, ...loginArgs], pathEnv));
+      return { present: true, version, ...login, via: 'npx', run: (args) => probe(npx, ['--no-install', name, ...args], pathEnv) };
     }
   }
   const onPath = await checkTool(name, loginArgs, pathEnv);
   const file = onPath.present ? findBinary(name, pathEnv) : null;
-  return { ...onPath, via: onPath.present ? 'path' : null, run: (args) => probe(file, args, pathEnv) };
+  // A cold npx that did not answer in time is not proof the CLI is missing.
+  const unknown = !onPath.present && npxTimedOut ? { timedOut: true } : {};
+  return { ...onPath, ...unknown, via: onPath.present ? 'path' : null, run: (args) => probe(file, args, pathEnv) };
 }
 
 // The JSON object in a CLI's output (stderr progress lines around it are ignored), or null.
@@ -251,14 +260,21 @@ export async function preflight({ home = null, pathEnv = process.env.PATH ?? '' 
 
 function formatReport(report) {
   const lines = [`Node      ${report.node.version}  ${report.node.ok ? 'ok' : 'unsupported'}`];
+  const noAnswer = [];
   for (const [name, tool] of Object.entries(report.tools)) {
     let login = '';
-    if (tool.loggedIn === true) login = 'logged in';
+    if (tool.timedOut) login = 'login unknown';
+    else if (tool.loggedIn === true) login = 'logged in';
     else if (tool.loggedIn === false) login = 'not logged in';
     const scope = tool.scope ? `  scope ${tool.scope}` : '';
-    const detail = tool.present ? `${tool.version ?? 'unknown'}  ${login}${scope}`.trim() : 'missing';
+    const detail = tool.present ? `${tool.version ?? 'unknown'}  ${login}${scope}`.trim() : tool.timedOut ? 'unknown' : 'missing';
     lines.push(`${name.padEnd(10)}${detail}`);
+    if (tool.timedOut) {
+      const command = [tool.via === 'path' ? name : `npx ${name}`, ...(TOOLS[name] ?? ['--version'])].join(' ');
+      noAnswer.push(`${name}: no answer in ${PROBE_TIMEOUT_MS / 1000} s; run \`${command}\` yourself`);
+    }
   }
+  lines.push(...noAnswer);
   lines.push(`Playwright chromium: ${report.playwright.chromium ? 'installed' : 'missing'}`);
   const { repos, ghAuth, dotfiles } = report.signals;
   lines.push(

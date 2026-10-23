@@ -246,6 +246,37 @@ test('a hanging login probe times out instead of blocking', { timeout: 30000 }, 
   assert.equal(strayProcess(`sleep ${SLEEP_MARK}`), false, 'timed-out probe left its grandchild running');
 });
 
+test('a login probe with no answer is reported as timed out, not logged out, with the command to run', { timeout: 30000 }, (t) => {
+  const bin = tempDir(t, 'preflight-bin-');
+  const home = tempDir(t, 'preflight-home-');
+  fakeBin(bin, 'vercel', `if [ "$1" = "--version" ]; then echo "44.2.0"; exit 0; fi\n/bin/sleep ${SLEEP_MARK}\nexit 0`);
+  const env = { PREFLIGHT_PROBE_TIMEOUT_MS: '1000' };
+  const report = runJson(['--home', home, '--path-env', bin], env);
+  assert.deepEqual(report.tools.vercel, { present: true, version: '44.2.0', loggedIn: false, timedOut: true, via: 'path', scope: null });
+  const text = run(['--home', home, '--path-env', bin], env);
+  assert.equal(text.status, 0, text.stderr);
+  assert.match(text.stdout, /^vercel {4}44\.2\.0 {2}login unknown$/m);
+  assert.match(text.stdout, /^vercel: no answer in 1 s; run `vercel whoami` yourself$/m);
+  assert.doesNotMatch(text.stdout, /vercel.*not logged in/);
+  assert.equal(strayProcess(`sleep ${SLEEP_MARK}`), false);
+});
+
+test('a cold npx that does not answer in time is "unknown", never "missing"', { timeout: 30000 }, (t) => {
+  const bin = tempDir(t, 'preflight-bin-');
+  const home = tempDir(t, 'preflight-home-');
+  fakeBin(bin, 'npx', `if [ "$2" = "vercel" ]; then /bin/sleep ${SLEEP_MARK}; fi\nexit 1`);
+  const env = { PREFLIGHT_PROBE_TIMEOUT_MS: '1000' };
+  assert.deepEqual(runJson(['--home', home, '--path-env', bin], env).tools.vercel, { present: false, version: null, loggedIn: false, timedOut: true, via: null, scope: null });
+  const text = run(['--home', home, '--path-env', bin], env);
+  assert.match(text.stdout, /^vercel {4}unknown$/m);
+  assert.match(text.stdout, /^vercel: no answer in 1 s; run `npx vercel whoami` yourself$/m);
+  assert.equal(strayProcess(`sleep ${SLEEP_MARK}`), false);
+});
+
+test('the probe timeout is 30 s by default', () => {
+  assert.match(run(['--help']).stdout, /Each probe times out after 30 s/);
+});
+
 test('ten git repos under --home plus gh login is experienced; dotfiles counted', (t) => {
   const bin = tempDir(t, 'preflight-bin-');
   const home = tempDir(t, 'preflight-home-');
