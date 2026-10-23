@@ -227,10 +227,21 @@ Read `build-rules.md`, `forms.md`, `third-party.md` and your host file first. In
    copies the captured scripts, fonts, root icons, web manifest and the media outside the
    media prefix (every media file in mode `repo`) to `public/` at their live paths, and exits 1
    naming any file the capture lists but does not hold; for `store`, upload now (host file).
-2. CSS: `node $KIT/skills/convert-site/scripts/css-prune.mjs --css capture/css --coverage capture/css-coverage.json --out src/styles/site.css --report .conversion/css-prune-report.json`. When it prints `wrote N per-page sheet(s)`, give each page its `pageSheet`
+2. CSS: `node $KIT/skills/convert-site/scripts/css-prune.mjs --css capture/css --coverage capture/css-coverage.json --report .conversion/css-prune-report.json`.
+   It writes each linked sheet, pruned, to `public/` at its live path and each head `<style>`
+   block to `src/styles/inline/`, and lists every page's head CSS in live order under `heads`
+   in the report: the content extractor copies `heads[<path>]` into each page's data, and the
+   page passes it to `Base.astro` as `css` (`build-rules.md`, "CSS"). css-prune clears the old
+   `inline-*.css` in `src/styles/inline/` on each run, so commit the folder as it leaves it.
+   The routes gate does not know the served sheets yet: add the path of each `sheets[].href`
+   to the `--allow-extra` list of every routes run and `npm run verify` (for example
+   `--allow-extra '/wp-content/themes/<theme>/style.css,/wp-includes/css/dist/block-library/style.min.css'`).
+   Exit 1 means a stylesheet had no coverage and was kept whole: record a decision.
+   Only for a simple classic theme (one theme sheet, no `<style>` blocks whose order
+   matters) may `--single-sheet --out src/styles/site.css` merge it all into one file, a
+   decision; when it then prints `wrote N per-page sheet(s)`, give each page its `pageSheet`
    from the report's `pageSheets`. css-prune clears the old `inline-*.css` in
    `src/styles/pages/` on each run, so commit the folder as it leaves it.
-   Exit 1 means a stylesheet had no coverage and was kept whole: record a decision.
 3. One layout per template, with the header, navigation and footer as components.
 4. The representative page of each template, its content moved from the captured markup.
 5. Forms (`forms.md`) and third-party scripts (`third-party.md`).

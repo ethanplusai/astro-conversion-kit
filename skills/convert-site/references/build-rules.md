@@ -74,33 +74,57 @@ parity and this file is wrong: say so and fix this file.
 
 ## CSS
 
-- Coverage first, then prune: `capture/css-coverage.json` (phase 2) and `css-prune.mjs` into
-  `src/styles/site.css`, linked once by `Base.astro`: the template imports it by URL
-  (`import siteCss from '../styles/site.css?url'`) and links it before the head slot, so a
-  page's own head content comes after it. Never switch to a plain `import '../styles/site.css'`:
-  Astro puts that link at the end of `<head>`, after every `set:html` head block. The scaffold
-  ships a one-line placeholder `site.css` so it builds before the prune replaces it, and
-  `src/styles/pages/` may be absent. The pruned file is the stylesheet; it is
-  never rewritten, reformatted or "cleaned up". The used rules of the head's `<style>` blocks
-  (WordPress emits several per page) are in it, each page's set under a comment naming its pages,
-  except a rule another page defines differently (a block theme's counter classes: `.wp-elements-1 a`
-  is white on one page and black on the next) and every rule naming its class (a class it styles, not one inside its `:not()`/`:where()`): those go to
+- **Each live stylesheet at its live path, each page's head CSS in live order** is the default,
+  recorded as a decision in the plan (topic "CSS per live sheet", default "per sheet"). Live
+  serves every page its own list of `<link rel="stylesheet">` and `<style>` blocks, interleaved
+  in a page-specific order, and rules of equal specificity resolve by that order: merged into one
+  file, a later page's copy of a block theme's global layout rule overrides a page's own
+  container rule (a post's H1 capped at 792 px instead of 900 px). Coverage first, then prune:
+  `capture/css-coverage.json` (phase 2) and `css-prune.mjs`, which reads each page's `<head>`
+  from `capture/inventory.json` and the snapshots, prunes every same-origin linked sheet on its
+  own (with the coverage of its own href only, so identical sheets a multisite serves under two
+  paths never share coverage) into `public/<live path>` (the query string dropped from the file
+  name, kept in the link), and every distinct head `<style>` block into
+  `src/styles/inline/inline-<page>-<n>.css`. The report's `heads` gives each path its list in
+  live order (`{ kind: "link", href, media? }`, `{ kind: "inline", file }`): the content
+  extractor copies it into each page's data and the page passes it to `Base.astro` as `css`,
+  which prints the links and the `<style>` blocks in that order before the head slot (the 404 and
+  thank-you pages pass the list of the page whose head they copy). No `site.css` is written
+  (`siteCss: null` in the report), and none is linked when a page passes `css`. A link keeps its
+  live `media` attribute; a sheet linked with a media no tested width satisfies (`print`) is kept
+  whole, because coverage runs on screen only. Another origin's sheet stays linked as live links
+  it (`external`); a same-origin link whose sheet was not captured is left out (`notCaptured`).
+  The routes gate does not know the sheets yet: pass each `sheets[].href` path in
+  `--allow-extra` (see phases.md, step 6.2).
+- `--single-sheet` merges everything into `src/styles/site.css` instead, for a simple classic
+  theme only: one theme stylesheet and no `<style>` blocks whose order matters. `Base.astro`
+  then imports it by URL (`import siteCss from '../styles/site.css?url'`) and links it before the
+  head slot, so a page's own head content comes after it. Never switch to a plain
+  `import '../styles/site.css'`: Astro puts that link at the end of `<head>`, after every
+  `set:html` head block. The scaffold ships a one-line placeholder `site.css` so it builds before
+  the prune replaces it, and `src/styles/pages/` may be absent. The used rules of the head's
+  `<style>` blocks are in it, each page's set under a comment naming its pages, except a rule
+  another page defines differently (a block theme's counter classes: `.wp-elements-1 a` is white
+  on one page and black on the next) and every rule naming its class (a class it styles, not one inside its `:not()`/`:where()`): those go to
   `src/styles/pages/<inline file>`, listed under `pageSheets` (`file`, `pages`, `rules`) in
   `.conversion/css-prune-report.json`. Link each page sheet only on the pages it lists, after
-  `site.css` (Base.astro's `pageSheet` prop); never copy its rules into `site.css`. Inline blocks
-  are known by their text, so WordPress 6.9+'s `/*# sourceURL=... */` comments change nothing.
+  `site.css` (Base.astro's `pageSheet` prop); never copy its rules into `site.css`. A sheet
+  linked with a media attribute is wrapped in that `@media`. Vite processes `site.css`, so
+  invalid live CSS (a stray `false;` in an embed's sheet) can fail the build; the default
+  serves sheets from `public/` and prints `<style>` blocks raw, untouched by Vite.
+- In both modes the pruned files are the stylesheets; they are never rewritten, reformatted or
+  "cleaned up". Inline blocks are known by their text, so WordPress 6.9+'s
+  `/*# sourceURL=... */` comments change nothing.
   A captured `@import` is replaced by the imported sheet's pruned rules in place; one whose
   target was not captured stays an `@import` and is listed under `unresolvedImports` in
   `.conversion/css-prune-report.json`: check each one loads from the new site or restore its
-  rules. Exit 1 means a stylesheet file (`unmatched`) never appeared in coverage and was kept
+  rules. A sheet or block css-tree cannot parse is kept byte for byte and listed under
+  `unparsed`. Exit 1 means a stylesheet file (`unmatched`) never appeared in coverage and was kept
   whole: re-run coverage on the pages that link it.
   `uncoveredInline` lists the pages' `<style>` sets no coverage run saw (usually pages past the
-  coverage cap of 10 per template); they are kept whole, so nothing is lost but bytes. Add one of
-  their pages to the coverage routes and run coverage and the prune again when the bytes matter.
-- **One stylesheet for every template** is the v0.1 default, recorded as a decision in the plan
-  (topic "one pruned site.css", default "one file", cost if wrong "each page loads rules other
-  templates use"). Splitting it per template is an improvement the suggestions report may
-  propose, never part of the default build.
+  coverage cap of 10 per template); they are kept whole. Per sheet they stay on their own pages,
+  so nothing is lost but bytes; merged (`--single-sheet`) they reach every page. Add one of
+  their pages to the coverage routes and run coverage and the prune again.
 - Coverage clicks each menu and accordion toggle once, and the prune keeps every state rule
   (`.open`, `.menu-open`, `.is-active`, `[aria-expanded="true"]`, …) whose element was on a
   covered page: the report counts them as `keptBecause.state` ("kept for state: N rules").

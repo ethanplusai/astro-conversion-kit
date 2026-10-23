@@ -256,16 +256,30 @@ test('SKILL.md: the post-plan status is required non-interactively, state.mjs ca
   assert.match(skill, /Stop any review server you started \(`npm run review:serve -- --stop`, and `npx astro preview stop` if you used the preview\)/);
 });
 
-test('build-rules and phases: site.css linked by URL before the head slot, page sheets from pageSheets, uncoveredInline', () => {
+test('build-rules and phases: each sheet at its live path and each page\'s head CSS in live order by default', () => {
   const rules = flat(read('references/build-rules.md'));
-  assert.match(rules, /linked once by `Base\.astro`: the template imports it by URL \(`import siteCss from '\.\.\/styles\/site\.css\?url'`\) and links it before the head slot/);
+  assert.match(rules, /\*\*Each live stylesheet at its live path, each page's head CSS in live order\*\* is the default, recorded as a decision in the plan \(topic "CSS per live sheet", default "per sheet"\)/);
+  assert.match(rules, /with the coverage of its own href only, so identical sheets a multisite serves under two paths never share coverage/);
+  assert.match(rules, /the page passes it to `Base\.astro` as `css`, which prints the links and the `<style>` blocks in that order before the head slot/);
+  assert.match(rules, /A link keeps its live `media` attribute; a sheet linked with a media no tested width satisfies \(`print`\) is kept whole/);
+  assert.match(rules, /`--single-sheet` merges everything into `src\/styles\/site\.css` instead, for a simple classic theme only: one theme stylesheet and no `<style>` blocks whose order matters/);
+  assert.match(rules, /A sheet or block css-tree cannot parse is kept byte for byte and listed under `unparsed`/);
+  const phases = flat(read('references/phases.md'));
+  assert.match(phases, /css-prune\.mjs --css capture\/css --coverage capture\/css-coverage\.json --report \.conversion\/css-prune-report\.json`\. It writes each linked sheet, pruned, to `public\/` at its live path/);
+  assert.match(phases, /the content extractor copies `heads\[<path>\]` into each page's data, and the page passes it to `Base\.astro` as `css`/);
+  assert.match(phases, /add the path of each `sheets\[\]\.href` to the `--allow-extra` list of every routes run and `npm run verify`/);
+});
+
+test('build-rules and phases: --single-sheet links site.css by URL before the head slot, page sheets from pageSheets, uncoveredInline', () => {
+  const rules = flat(read('references/build-rules.md'));
+  assert.match(rules, /`Base\.astro` then imports it by URL \(`import siteCss from '\.\.\/styles\/site\.css\?url'`\) and links it before the head slot/);
   assert.match(rules, /Never switch to a plain `import '\.\.\/styles\/site\.css'`/);
   assert.match(rules, /those go to `src\/styles\/pages\/<inline file>`, listed under `pageSheets` \(`file`, `pages`, `rules`\) in `\.conversion\/css-prune-report\.json`/);
   assert.match(rules, /Link each page sheet only on the pages it lists, after `site\.css` \(Base\.astro's `pageSheet` prop\); never copy its rules into `site\.css`/);
   assert.match(rules, /WordPress 6\.9\+'s `\/\*# sourceURL=\.\.\. \*\/` comments change nothing/);
   assert.match(rules, /`uncoveredInline` lists the pages' `<style>` sets no coverage run saw/);
   const phases = flat(read('references/phases.md'));
-  assert.match(phases, /When it prints `wrote N per-page sheet\(s\)`, give each page its `pageSheet` from the report's `pageSheets`/);
+  assert.match(phases, /`--single-sheet --out src\/styles\/site\.css` merge it all into one file, a decision; when it then prints `wrote N per-page sheet\(s\)`, give each page its `pageSheet` from the report's `pageSheets`/);
   assert.match(phases, /css-prune clears the old `inline-\*\.css` in `src\/styles\/pages\/` on each run, so commit the folder as it leaves it/);
   assert.match(rules, /every rule naming its class \(a class it styles, not one inside its `:not\(\)`\/`:where\(\)`\): those go to/);
 });
