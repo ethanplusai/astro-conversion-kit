@@ -35,6 +35,9 @@ build drops).
 An entry with downloaded: false (a size only the REST media list names, which media.mjs lists
 but does not download by default) is not checked and the summary counts it as skipped
 ("unreferenced size"); it is never a failure.
+An entry with resized: true (media.mjs saved a resized copy because live no longer serves the
+original) is checked against the bytes saved, like any other, and counted in a note
+("N resized (original unavailable on live)"); it is never a failure.
 `;
 
 // Whether --paths selects a media file: by its own path, or by a page that references it.
@@ -153,6 +156,9 @@ function main() {
     results.failures.push(...fromLive.map((m) => ({ path: m.path, field: 'media', expected: 'served by the build', actual: FROM_LIVE })));
     results.checked += fromLive.length;
   } else if (mode === 'live-temporary') Object.assign(results, { skipped: items.length - results.checked, skipReason: 'served from live' });
+  // Resized stand-ins pass on their saved bytes, but are never passed off silently as originals.
+  const resized = items.filter((m) => m.resized === true).length;
+  if (resized) results.notes = [...(results.notes ?? []), `${resized} resized (original unavailable on live)`];
   return report(NAME, withUnreferenced(results), { json: args.json });
 }
 

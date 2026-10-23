@@ -212,6 +212,19 @@ test('usage and missing inputs exit 2; --help exits 0', async () => {
   assert.match(help.stdout, /--media-manifest/);
 });
 
+test('a resized stand-in is checked by its saved bytes and counted in a note, never a failure', async () => {
+  const marked = join(root, 'baseline-resized');
+  cpSync(baseline, marked, { recursive: true });
+  const [first, ...rest] = media;
+  writeFileSync(join(marked, 'media.json'), JSON.stringify([{ ...first, resized: true, downloadedFrom: `https://www.example.com${first.path}?w=1024` }, ...rest]));
+  const run = (args = []) => runGate('media', ['--dist', good, '--baseline', marked, ...args], { cwd: root, env: { PUBLIC_INDEXABLE: '' } });
+  const result = await run();
+  assert.equal(result.code, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^ {2}1 resized \(original unavailable on live\)$/m);
+  assert.match(result.stdout, new RegExp(`^media: ${media.length} checked, 0 failed`, 'm'));
+  assert.doesNotMatch((await gate(good)).stdout, /resized/);
+});
+
 test('a file with downloaded: false (an unreferenced size) is skipped and counted, never a failure', async () => {
   const listed = join(root, 'baseline-listed');
   cpSync(baseline, listed, { recursive: true });

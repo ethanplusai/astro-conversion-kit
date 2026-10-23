@@ -256,6 +256,31 @@ test('an unreferenced size (downloaded: false) is kept in baseline/media.json wi
   assert.equal(readFileSync(join(baseline, 'media.json'), 'utf8').includes('downloaded'), false);
 });
 
+test('a resized stand-in (resized, downloadedFrom) keeps both fields in baseline/media.json', async (t) => {
+  const marked = join(root, 'capture-resized');
+  const out = join(root, 'baseline-resized');
+  cpSync(capture, marked, { recursive: true });
+  t.after(() => rmSync(marked, { recursive: true, force: true }));
+  const media = readJson(capture, 'media.json');
+  const first = media.find((m) => m.status === 200);
+  const rest = media.filter((m) => m !== first);
+  const from =`${first.url}?w=1024`;
+  writeFileSync(join(marked, 'media.json'), JSON.stringify([{ ...first, resized: true, downloadedFrom: from }, ...rest]));
+  const result = await build(['--capture', marked, '--out', out]);
+  assert.equal(result.code, 0, result.stderr);
+  const entry = readJson(out, 'media.json').find((m) => m.path === first.path);
+  assert.equal(entry.resized, true);
+  assert.equal(entry.downloadedFrom, from);
+  assert.equal(entry.bytes, first.bytes);
+  // A cache-buster stand-in is the original file: downloadedFrom only.
+  writeFileSync(join(marked, 'media.json'), JSON.stringify([{ ...first, downloadedFrom: `${first.url}?ver=3` }, ...rest]));
+  assert.equal((await build(['--capture', marked, '--out', out])).code, 0);
+  const plain = readJson(out, 'media.json').find((m) => m.path === first.path);
+  assert.equal(plain.resized, undefined);
+  assert.equal(plain.downloadedFrom, `${first.url}?ver=3`);
+  assert.equal(readFileSync(join(baseline, 'media.json'), 'utf8').includes('resized'), false);
+});
+
 test('counts.json sums the baseline', () => {
   assert.deepEqual(readJson(baseline, 'counts.json'), {
     routes: 16,

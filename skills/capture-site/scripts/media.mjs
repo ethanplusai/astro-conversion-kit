@@ -32,10 +32,14 @@ www or not) are one entry, and the URL listed and requested is the bare path, wi
 string. Image hosts that resize by query (WordPress VIP, Jetpack Photon, ?w=1024, ?resize=300,200)
 serve the original at the bare path, so that is what is downloaded; each query string seen is
 listed under variants: [{ query, referencedBy }] and not requested (--sizes all checks and
-downloads them too, saved as <path>%3F<query>, with downloaded: true). When the bare path does
-not answer 200, the largest variant (by its w, width, resize or fit width, else the first seen)
-is downloaded in its place, and the entry says resized: true and downloadedFrom: <url>, so the
-plan can say the original is unavailable.
+downloads them too, with downloaded: true, saved as <path>%3F<query> under <download>-variants/,
+outside the cache that is uploaded or copied into the repo). When the bare path answers an
+error (4xx or 5xx; a redirect is recorded with its location and a too-large file is asked again
+once the cap is raised, as for any file), a variant is downloaded in its place and the entry says downloadedFrom: <url>. A variant
+with no size or transform parameter (w, h, width, height, resize, crop, fit, quality, format,
+s) is a cache-buster, the same file: the first one is preferred and nothing more is marked.
+Otherwise the largest (by its w, width, resize or fit width, else the first seen) is saved and
+the entry also says resized: true, so the plan can say the original is unavailable.
 Each file is checked with one paced HEAD request (GET when HEAD is refused), several at once.
 By default (--sizes referenced) the files checked and downloaded are every original in the REST
 media list and every file a page, stylesheet, srcset, og tag or sitemap references; a REST
@@ -345,9 +349,13 @@ function downloadTarget(dir, path) {
   return target.startsWith(root + sep) ? target : null;
 }
 
+// Where --sizes all saves variants: a sibling of the download folder, so the cache that is
+// uploaded or copied into the repo holds bare paths only.
+const variantsDir = (dir) => `${resolve(dir)}-variants`;
+
 // A query-string variant's cache file: <path>%3F<query>, the query kept readable but safe.
 function variantTarget(dir, path, query) {
-  const target = downloadTarget(dir, path);
+  const target = downloadTarget(variantsDir(dir), path);
   const safe = query.replace(/[^A-Za-z0-9._~=&,+-]/g, (c) => encodeURIComponent(c).replace(/[!'()*]/g, (x) => `%${x.charCodeAt(0).toString(16).toUpperCase()}`));
   return target ? `${target}%3F${safe}` : null;
 }
@@ -362,15 +370,30 @@ function queryWidth(query) {
   return null;
 }
 
-// The variant to save when the original is unavailable: the widest, else the first seen.
-export function largestVariant(variants) {
+// Query parameters that resize or transform an image (Photon, VIP, Cloudinary-style, Gravatar s=).
+const RESIZE_KEYS = ['w', 'h', 'width', 'height', 'resize', 'crop', 'fit', 'quality', 'format', 's'];
+const isResize = (query) => {
+  const params = new URLSearchParams(query);
+  return RESIZE_KEYS.some((key) => params.has(key));
+};
+
+// The variant to save when the original is unavailable, and whether it is a resized copy: the
+// first cache-buster (the same file as the original) when there is one, else the widest
+// resize, else the first seen.
+export function standInVariant(variants) {
+  const buster = variants.find((v) => !isResize(v.query));
+  if (buster) return { variant: buster, resized: false };
   let best = null;
   for (const v of variants) {
     const width = queryWidth(v.query);
     if (width !== null && (best === null || width > best.width)) best = { variant: v, width };
   }
-  return best?.variant ?? variants[0];
+  return { variant: best?.variant ?? variants[0], resized: true };
 }
+
+// Only an error answer (4xx, 5xx) means the original is missing. A redirect is recorded with its
+// location, and "too-large" is asked again once the cap is raised: neither gets a stand-in.
+const missingOriginal = (status) => typeof status === 'number' && status >= 400 && status < 600;
 
 const fileHolds = (file, bytes) => {
   try {
@@ -475,7 +498,8 @@ async function main() {
       if (downloaded) {
         Object.assign(entry, { status: before.status, contentType: before.contentType, bytes: before.bytes });
         if (before.location) entry.location = before.location;
-        if (before.resized) Object.assign(entry, { resized: true, downloadedFrom: before.downloadedFrom });
+        if (before.resized) entry.resized = true;
+        if (before.downloadedFrom) entry.downloadedFrom = before.downloadedFrom;
         continue;
       }
     }
@@ -502,10 +526,10 @@ async function main() {
         stop ??= entry;
         return;
       }
-      // The original is not at the bare path: save the largest resized copy in its place, marked.
+      // The original is not at the bare path: save a variant in its place, marked when resized.
       let fallback = null;
-      if (!variant && checked.res.status !== 200 && entry.variants?.length) {
-        const chosen = largestVariant(entry.variants);
+      if (!variant && missingOriginal(checked.res.status) && entry.variants?.length) {
+        const { variant: chosen, resized } = standInVariant(entry.variants);
         const tried = await check(`${entry.url}?${chosen.query}`, target);
         if (!tried) return;
         if (stops(tried.res)) {
@@ -513,8 +537,9 @@ async function main() {
           return;
         }
         if (tried.res.status === 200) {
-          process.stderr.write(`${entry.path}: the original answered ${checked.res.status}; saved the resized copy ?${chosen.query} instead (resized: true)\n`);
-          fallback = `${entry.url}?${chosen.query}`;
+          const what = resized ? `the resized copy ?${chosen.query} instead (resized: true)` : `?${chosen.query} instead (a cache-busting query, not a resize)`;
+          process.stderr.write(`${entry.path}: the original answered ${checked.res.status}; saved ${what}\n`);
+          fallback = { downloadedFrom: `${entry.url}?${chosen.query}`, ...(resized ? { resized: true } : {}) };
           checked = tried;
         }
       }
@@ -531,7 +556,7 @@ async function main() {
       if (res.status >= 300 && res.status < 400 && res.headers?.location) {
         into.location = new URL(res.headers.location, url).href;
       }
-      if (fallback) Object.assign(entry, { resized: true, downloadedFrom: fallback });
+      if (fallback) Object.assign(entry, fallback);
       if (variant && args.download && res.status === 200) variant.downloaded = true;
       if (streak.size >= BLOCK_LIMIT) stop ??= entry;
       done += 1;
@@ -561,6 +586,7 @@ async function main() {
     const n = varied.reduce((sum, m) => sum + m.variants.length, 0);
     const how = args.sizes !== 'all' ? 'listed only' : args.download ? 'downloaded' : 'checked';
     console.log(`${count(n)} query-string ${n === 1 ? 'variant' : 'variants'} of ${count(varied.length)} ${varied.length === 1 ? 'file' : 'files'} (${how})`);
+    if (how === 'downloaded') console.log(`Variants saved under ${variantsDir(args.download)} (not part of the media cache).`);
   }
   const resized = media.filter((m) => m.resized).length;
   if (resized) {

@@ -23,7 +23,9 @@ Freeze a capture (capture.mjs, media.mjs and templates.mjs output) into a baseli
   media.json      [{ path, bytes, contentType, referencedBy }] for every media file answering 200
                   (referencedBy: the pages that use it, from capture/media.json); a size the
                   capture listed but did not download keeps downloaded: false and its reason
-                  (bytes null), so the media gate counts it as skipped
+                  (bytes null), so the media gate counts it as skipped; a file saved from a
+                  query-string variant because the bare path failed keeps downloadedFrom, and
+                  resized: true when that copy is resized (the media gate counts those)
   forms.json      { "<path>": [{ action, method, fields[] }] }
   scripts.json    { "<vendor>": { id, ids[], pages[], keep } }; keep is true, set it to false
                   to drop a vendor from the build
@@ -233,6 +235,10 @@ export function baselineMedia(media) {
     .filter((m) => m.status === 200 || m.downloaded === false)
     .map((m) => {
       const entry = { path: m.path, bytes: m.bytes, contentType: m.contentType, referencedBy: m.referencedBy ?? [] };
+      // A stand-in media.mjs saved because the bare path failed: where it came from, and whether
+      // it is a resized copy rather than the original.
+      if (m.downloadedFrom) entry.downloadedFrom = m.downloadedFrom;
+      if (m.resized === true) entry.resized = true;
       return m.downloaded === false ? { ...entry, bytes: null, contentType: null, downloaded: false, reason: m.reason ?? 'unreferenced size' } : entry;
     });
 }
