@@ -83,9 +83,14 @@ export async function S(site, ...args) {
 const setState = (site, key, value) => S(site, 'set', key, JSON.stringify(value));
 export const state = (site) => readJson(join(site, '.conversion', 'state.json'));
 
-// The form flags the gates get on every run (forms.md), plus the new thank-you page (routes).
+// The form flags the gates get on every run (forms.md), plus the routes gate's allowed extras:
+// the new thank-you page and each stylesheet css-prune serves at its live path (phases.md).
 const FORM_FLAGS = ['--endpoint', ENDPOINT, '--honeypot', '_gotcha', '--thank-you', '/thank-you/'];
-const VERIFY_FLAGS = [...FORM_FLAGS, '--allow-extra', '/thank-you/'];
+const allowExtra = (site) => {
+  const { sheets = [] } = readJson(join(site, '.conversion', 'css-prune-report.json'));
+  return ['--allow-extra', ['/thank-you/', ...sheets.map((s) => new URL(s.href).pathname)].join(',')];
+};
+const verifyFlags = (site) => [...FORM_FLAGS, ...allowExtra(site)];
 
 // ---------------------------------------------------------------------------------------------
 // 1. intake
@@ -161,7 +166,7 @@ export async function capture({ site, live }) {
 // The oddities and defaults this capture shows, each "reproduce live" unless the gates or
 // pre-launch force otherwise (and then the reason says which).
 const DECISIONS = [
-  { topic: 'one pruned site.css', choice: 'one file for every template', default: 'one file', reason: 'build-rules.md v0.1 default', costIfWrong: 'each page loads rules other templates use' },
+  { topic: 'CSS per live sheet', choice: 'each sheet pruned at its live path, each page its own head order', default: 'per sheet', reason: 'build-rules.md default; one merged file changes the cascade', costIfWrong: 'none' },
   { topic: 'shortcode printed as text on /choosing-siding-colors/', choice: 'reproduce live', default: 'reproduce live', reason: 'parity; the fix is a suggestion', costIfWrong: 'none for launch' },
   { topic: 'missing alt on a home carousel image', choice: 'reproduce live', default: 'reproduce live', reason: 'parity; the fix is a suggestion', costIfWrong: 'none for launch' },
   { topic: 'redirect chain /old-services -> /old-services/ -> /services/', choice: 'one hop to /services/', default: 'one hop', reason: 'the redirects gate requires one hop', costIfWrong: 'none' },
@@ -386,14 +391,14 @@ function layoutFile({ headExtras, mainAttrs }) {
 import Base from './Base.astro';
 import Header from '../components/Header.astro';
 import Footer from '../components/Footer.astro';
-const { seo = {}, bodyClass, head = {} } = Astro.props;
+const { seo = {}, bodyClass, head = {}, css } = Astro.props;
 const headExtras = ${js(headExtras)};
 const og = Object.entries(seo.og ?? {});
 const twitter = Object.entries(seo.twitter ?? {});
 const jsonLd = seo.jsonLd ?? [];
 const mainAttrs = ${js(mainAttrs)};
 ---
-<Base title={head.title ?? seo.title} description={head.description ?? (seo.description || undefined)} canonical={head.canonical ?? (seo.canonical || undefined)} robots={head.robots ?? (seo.robots || undefined)} lang={seo.lang || 'en'} bodyClass={bodyClass}>
+<Base title={head.title ?? seo.title} description={head.description ?? (seo.description || undefined)} canonical={head.canonical ?? (seo.canonical || undefined)} robots={head.robots ?? (seo.robots || undefined)} lang={seo.lang || 'en'} bodyClass={bodyClass} css={css}>
   <Fragment slot="head">
     {og.map(([key, value]) => <meta property={\`og:\${key}\`} content={value} />)}
     {twitter.map(([key, value]) => <meta name={\`twitter:\${key}\`} content={value} />)}
@@ -423,7 +428,7 @@ const { page } = Astro.props;
 const Layout = LAYOUTS[page.template];
 const html = readFileSync(join(process.cwd(), 'src', 'content', 'pages', \`\${page.slug}.html\`), 'utf8');
 ---
-<Layout seo={seo[page.path]} bodyClass={page.bodyClass}><Fragment set:html={html} /></Layout>
+<Layout seo={seo[page.path]} bodyClass={page.bodyClass} css={page.css}><Fragment set:html={html} /></Layout>
 `;
 
 // Steps 1 and 2: media at its original paths, the theme scripts at theirs, the pruned CSS.
@@ -432,9 +437,17 @@ export async function mediaAndCss({ site }) {
   for (const entry of readJson(join(site, 'capture', 'js', 'manifest.json')).filter((e) => e.file)) {
     cpSync(join(site, 'capture', 'js', entry.file), join(site, 'public', decodeURIComponent(new URL(entry.src).pathname).replace(/^\//, '')));
   }
-  const prune = await node(site, kit('convert-site', 'css-prune.mjs'), ['--single-sheet', '--css', 'capture/css', '--coverage', 'capture/css-coverage.json', '--out', 'src/styles/site.css', '--report', '.conversion/css-prune-report.json']);
-  // Base.astro links src/styles/site.css itself (before the head slot), so nothing is added here.
+  // Each linked sheet pruned into public/ at its live path, each head <style> block into
+  // src/styles/inline/; the report's heads give every page its head CSS list for Base.astro.
+  const prune = await node(site, kit('convert-site', 'css-prune.mjs'), ['--css', 'capture/css', '--coverage', 'capture/css-coverage.json', '--report', '.conversion/css-prune-report.json']);
   return { prune };
+}
+
+// Each page's head CSS list in live order (css-prune's heads), for Base.astro's css prop.
+function headCss(site, path) {
+  const { heads } = readJson(join(site, '.conversion', 'css-prune-report.json'));
+  if (!heads[path]) throw new Error(`${path}: css-prune's report has no head CSS list`);
+  return heads[path];
 }
 
 // Steps 3 to 5: the shared parts as components, one layout per template, the content of the
@@ -467,7 +480,7 @@ export function templates({ site, live, paths }) {
     const cut = page(path);
     if (cut.before !== first.before || cut.after !== first.after) throw new Error(`${path}: header or footer differs from the representative`);
     write(join(site, 'src', 'content', 'pages', `${slugOf(path)}.html`), rewireForms(unlazy(cut.content), live));
-    pages.push({ path, slug: slugOf(path), template: route.template, bodyClass: cut.bodyClass });
+    pages.push({ path, slug: slugOf(path), template: route.template, bodyClass: cut.bodyClass, css: headCss(site, path) });
   }
   write(join(site, 'src', 'content', 'pages.json'), `${JSON.stringify(pages, null, 2)}\n`);
   return { layouts, pages: pages.map((p) => p.path) };
@@ -478,7 +491,7 @@ export function thankYouPage(site, live) {
   write(join(site, 'src', 'pages', 'thank-you.astro'), `---
 import Page from '../layouts/Page.astro';
 ---
-<Page head={{ title: ${js(`Thank you | ${NAME}`)}, description: 'Your message was sent.', canonical: ${js(`${live}/thank-you/`)}, robots: 'noindex' }} bodyClass="page-template-default page">
+<Page head={{ title: ${js(`Thank you | ${NAME}`)}, description: 'Your message was sent.', canonical: ${js(`${live}/thank-you/`)}, robots: 'noindex' }} bodyClass="page-template-default page" css={${js(headCss(site, '/about/'))}}>
   <article class="page type-page"><h1 class="entry-title">Thank you</h1><p>Your message was sent. We will get back to you within one business day.</p></article>
 </Page>
 `);
@@ -534,7 +547,7 @@ export const GET = () => new Response(readFileSync(join(process.cwd(), 'capture'
 import Other from '../layouts/Other.astro';
 const html = ${js(cut.content)};
 ---
-<Other head={{ title: ${js(record.title)}, description: ${js(record.description ?? undefined)}, robots: 'noindex' }} bodyClass=${js(cut.bodyClass)}><Fragment set:html={html} /></Other>
+<Other head={{ title: ${js(record.title)}, description: ${js(record.description ?? undefined)}, robots: 'noindex' }} bodyClass=${js(cut.bodyClass)} css={${js(headCss(site, missing.path))}}><Fragment set:html={html} /></Other>
 `);
   // robots.txt: the captured file is the indexable body, its sister-site Sitemap: line included.
   const robots = join(site, 'src', 'pages', 'robots.txt.js');
@@ -589,7 +602,7 @@ const SCOPED_GATES = ['forms', 'headers', 'media', 'routes', 'scripts', 'seo', '
 export async function scopedGates(site, P) {
   const results = {};
   for (const gate of SCOPED_GATES) {
-    const args = [...(P ? ['--paths', P] : []), ...(gate === 'forms' ? FORM_FLAGS : []), ...(gate === 'routes' ? ['--allow-extra', '/thank-you/'] : [])];
+    const args = [...(P ? ['--paths', P] : []), ...(gate === 'forms' ? FORM_FLAGS : []), ...(gate === 'routes' ? allowExtra(site) : [])];
     results[gate] = await node(site, join(site, 'scripts', 'verify', `${gate}.mjs`), args);
   }
   return results;
@@ -642,10 +655,10 @@ export async function build({ site, live }) {
 export async function gates({ site }) {
   await S(site, 'phase', 'gates');
   expectCode(await npm(site, ['run', 'build']));
-  const staging = await npm(site, ['run', 'verify', '--', ...VERIFY_FLAGS]);
+  const staging = await npm(site, ['run', 'verify', '--', ...verifyFlags(site)]);
   const stagingAbout = readFileSync(join(site, 'dist', 'about', 'index.html'), 'utf8');
   expectCode(await npm(site, ['run', 'build'], { env: { PUBLIC_INDEXABLE: 'true' } }));
-  const release = await npm(site, ['run', 'verify:release', '--', ...VERIFY_FLAGS]);
+  const release = await npm(site, ['run', 'verify:release', '--', ...verifyFlags(site)]);
   expectCode(await npm(site, ['run', 'build']));
   await setState(site, 'phases.gates.result', { verify: staging.code, release: release.code });
   return { staging, release, stagingAbout };
@@ -740,7 +753,7 @@ const COLLECT = "const fs=require('fs');const t=fs.readFileSync('.conversion/gat
 export async function suggestions({ site }) {
   await S(site, 'phase', 'suggestions');
   expectCode(await npm(site, ['run', 'build']));
-  const out = await npm(site, ['run', '--silent', 'verify', '--', '--json', ...VERIFY_FLAGS]);
+  const out = await npm(site, ['run', '--silent', 'verify', '--', '--json', ...verifyFlags(site)]);
   writeFileSync(join(site, '.conversion', 'gates.out'), out.stdout);
   expectCode(await sh(process.execPath, ['-e', COLLECT], { cwd: site }));
   const suggest = expectCode(await node(site, kit('suggest-improvements', 'suggest.mjs'), [
@@ -766,7 +779,7 @@ export async function pr({ site, results }) {
   write(join(site, '.conversion', 'pr-body.md'), body);
   await commit(site, 'docs: launch runbook');
   expectCode(await npm(site, ['run', 'build']));
-  const verify = await npm(site, ['run', 'verify', '--', ...VERIFY_FLAGS]);
+  const verify = await npm(site, ['run', 'verify', '--', ...verifyFlags(site)]);
   const check = await npm(site, ['run', 'review:check']);
   expectCode(await git(site, ['push', '-q', 'origin', 'astro-rebuild']));
   await setState(site, 'needsYou', [...needsYou, 'open the PR: gh pr create --base main --head astro-rebuild --body-file .conversion/pr-body.md']);

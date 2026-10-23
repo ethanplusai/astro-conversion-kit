@@ -167,6 +167,12 @@ test('init scaffolds templates, copies scripts, commits on main and switches to 
   assert.doesNotMatch(base, /^import '\.\.\/styles\/site\.css';$/m);
   const order = ['<link rel="stylesheet" href={siteCss} />', '{pageCss && <link rel="stylesheet" href={pageCss} />}', '<slot name="head" />'].map((s) => base.indexOf(s));
   assert.ok(order.every((at, i) => at > 0 && (i === 0 || at > order[i - 1])), `site.css, the page sheet, then the head slot: ${order}`);
+  // The default build: the page's own head CSS list (css-prune's heads) in live order, links to
+  // the sheets at their live paths and the pruned <style> blocks printed in place, before the slot.
+  assert.match(base, /import\.meta\.glob\('\.\.\/styles\/inline\/\*\.css', \{ query: '\?raw', import: 'default', eager: true \}\)/);
+  const perPage = ['{css ? css.map((entry) => (entry.kind === \'inline\'', '<Fragment set:html={inlineCss(entry.file)} />',
+    '<link rel="stylesheet" href={entry.href} media={entry.media} />', '<link rel="stylesheet" href={siteCss} />', '<slot name="head" />'].map((s) => base.indexOf(s));
+  assert.ok(perPage.every((at, i) => at > 0 && (i === 0 || at > perPage[i - 1])), `the css list, else site.css, then the head slot: ${perPage}`);
   assert.match(readFileSync(join(dir, 'src', 'styles', 'site.css'), 'utf8'), /css-prune\.mjs/);
   const ignore = readFileSync(join(dir, '.gitignore'), 'utf8').split('\n');
   for (const entry of ['/capture/screens/', '/capture/lighthouse-live/', '/review/', 'node_modules', 'dist',

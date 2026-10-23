@@ -66,7 +66,7 @@ test('4 scaffold: init-site around capture/ and .conversion/; main holds the one
   assert.match(results.scaffold.mainLog[0], /chore: scaffold from astro-conversion-kit/);
   assert.equal(results.scaffold.branch, 'astro-rebuild');
   assert.ok(existsSync(file('docs', 'media-plan.json')) && !existsSync(file('.conversion', 'media-plan.json')));
-  assert.match(readFileSync(file('docs', 'plan.md'), 'utf8'), /\| d1 \| .* \| one pruned site\.css \|/);
+  assert.match(readFileSync(file('docs', 'plan.md'), 'utf8'), /\| d1 \| .* \| CSS per live sheet \|/);
   assert.match(readFileSync(file('.gitignore'), 'utf8'), /^\/\.conversion\/media-cache\/$/m);
 });
 
@@ -89,17 +89,29 @@ test('6 build: the seven gates pass on the templates and then on every path; the
   for (const f of ['Header.astro', 'Nav.astro', 'Footer.astro']) assert.ok(existsSync(file('src', 'components', f)), f);
   assert.ok(existsSync(file('src', 'pages', '[...path].astro')));
   assert.match(R.readJson(file('vercel.json')).rewrites.map((r) => `${r.source} ${r.destination}`).join(), /\/feed\/ \/feed\/index\.xml/);
-  // Base.astro links site.css itself, before the page's own head content (Astro would put an
-  // imported stylesheet at the end of <head>, after it).
-  for (const page of ['index.html', join('about', 'index.html')]) {
-    const head = readFileSync(file('dist', page), 'utf8').split('</head>')[0];
-    const sheets = [...head.matchAll(/<link\b[^>]*\brel="stylesheet"[^>]*>/g)];
-    assert.equal(sheets.length, 1, `${page}: exactly one stylesheet link\n${sheets.map((m) => m[0]).join('\n')}`);
-    assert.match(sheets[0][0], /href="\/_astro\/site\.[^"]+\.css"/, page);
-    const perPage = head.indexOf('property="og:');
+  // Each page's head CSS as live has it: one link per live sheet (root-relative, its query and
+  // media kept) and its <style> blocks, in live's order, before the per-page head content.
+  const headCss = (html) => [...html.split('</head>')[0].matchAll(/<link\b[^>]*\brel="stylesheet"[^>]*>|<style\b[^>]*>/g)].map(({ 0: tag, index }) => {
+    const href = /\bhref="([^"]*)"/.exec(tag)?.[1];
+    const media = /\bmedia="([^"]*)"/.exec(tag)?.[1];
+    return { tag: href ? `link ${href.replace(fixture.origin, '')} ${media ?? ''}` : 'style', index };
+  });
+  const routes = R.readJson(file('baseline', 'routes.json'));
+  for (const [path, page] of [['/', 'index.html'], ['/about/', join('about', 'index.html')], ['/contact/', join('contact', 'index.html')]]) {
+    const built = readFileSync(file('dist', page), 'utf8');
+    const live = headCss(readFileSync(file('capture', routes.find((r) => r.path === path).snapshot), 'utf8'));
+    const sheets = headCss(built);
+    assert.ok(live.some((s) => s.tag.startsWith('link')), `${path}: live links a stylesheet`);
+    if (path !== '/about/') assert.ok(live.some((s) => s.tag === 'style'), `${path}: live has head <style> blocks`);
+    assert.deepEqual(sheets.map((s) => s.tag), live.map((s) => s.tag), `${path}: the live head CSS order`);
+    const perPage = built.indexOf('property="og:');
     assert.ok(perPage > 0, `${page}: the page's og tags are in the head`);
-    assert.ok(sheets[0].index < perPage, `${page}: the stylesheet link comes before the per-page head content`);
+    assert.ok(sheets.every((s) => s.index < perPage), `${page}: the stylesheets come before the per-page head content`);
   }
+  // The theme sheet is served pruned at its live path, and no site.css is linked.
+  const theme = readFileSync(file('dist', 'wp-content', 'themes', 'fixture', 'style.css'), 'utf8');
+  assert.ok(theme.length < readFileSync(file('capture', 'css', '1.css'), 'utf8').length, 'the theme sheet is pruned');
+  assert.ok(!readFileSync(file('dist', 'index.html'), 'utf8').includes('/_astro/site.'), 'no site.css link');
 });
 
 test('7 gates: npm run verify passes the staging build and verify:release the release build', () => {

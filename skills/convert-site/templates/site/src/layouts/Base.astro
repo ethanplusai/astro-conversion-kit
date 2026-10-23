@@ -1,14 +1,26 @@
 ---
 // Shared document shell. Head values come from capture/, never retyped.
-// site.css is linked by URL before the head slot: an imported stylesheet would land at the end of
-// <head>, after a page's own <style> blocks. A page sheet (src/styles/pages/, css-prune's
-// pageSheets) is linked after it, only on the pages that pass its file name as pageSheet.
+// CSS comes before the head slot, in one of two forms:
+// - css (the default build): the page's own head list in live order, from css-prune's report
+//   heads[<path>]: { kind: 'link', href, media? } links a pruned sheet at its live path under
+//   public/ (or another origin's sheet as live links it), { kind: 'inline', file } prints the
+//   pruned <style> block src/styles/inline/<file> in place. Live interleaves the two, and
+//   equal-specificity rules resolve by that order.
+// - no css (css-prune --single-sheet): site.css, linked by URL (an imported stylesheet would land
+//   at the end of <head>, after a page's own <style> blocks), then a page sheet
+//   (src/styles/pages/, css-prune's pageSheets) only on the pages that pass its file name as pageSheet.
 import { INDEXABLE } from '../lib/site.mjs';
 import siteCss from '../styles/site.css?url';
 const pageSheets = import.meta.glob('../styles/pages/*.css', { query: '?url', import: 'default', eager: true });
+const inlineBlocks = import.meta.glob('../styles/inline/*.css', { query: '?raw', import: 'default', eager: true });
 
-const { title, description, canonical, robots, lang = 'en', pageSheet } = Astro.props;
+const { title, description, canonical, robots, lang = 'en', pageSheet, css } = Astro.props;
 const pageCss = pageSheet ? pageSheets[`../styles/pages/${pageSheet}`] : null;
+const inlineCss = (file) => {
+  const text = inlineBlocks[`../styles/inline/${file}`];
+  if (text === undefined) throw new Error(`Base.astro: src/styles/inline/${file} does not exist; run css-prune again`);
+  return `<style>${text}</style>`;
+};
 ---
 <!doctype html>
 <html lang={lang}>
@@ -20,8 +32,14 @@ const pageCss = pageSheet ? pageSheets[`../styles/pages/${pageSheet}`] : null;
     {canonical && <link rel="canonical" href={canonical} />}
     {robots && <meta name="robots" content={robots} />}
     {!INDEXABLE && <meta name="robots" content="noindex, nofollow" />}
-    <link rel="stylesheet" href={siteCss} />
-    {pageCss && <link rel="stylesheet" href={pageCss} />}
+    {css ? css.map((entry) => (entry.kind === 'inline'
+      ? <Fragment set:html={inlineCss(entry.file)} />
+      : <link rel="stylesheet" href={entry.href} media={entry.media} />)) : (
+      <>
+        <link rel="stylesheet" href={siteCss} />
+        {pageCss && <link rel="stylesheet" href={pageCss} />}
+      </>
+    )}
     <slot name="head" />
   </head>
   <body class={Astro.props.bodyClass}>
