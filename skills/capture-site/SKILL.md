@@ -124,6 +124,16 @@ source. Run each step as its own command, in this order:
    only)`: repeat that line to the person. Use `--sizes all` when the owner says old
    emails or other sites may link to those sizes.
 
+   Hosts that resize by query string (WordPress VIP, Jetpack Photon: `photo.jpg?w=1024`,
+   `?resize=300,200`) serve every size at the same path. The original is the bare path, so that
+   is what is requested and saved; each query string seen is listed under `variants` (not
+   requested; `--sizes all` saves them as `<path>%3F<query>`). When the bare path does not
+   answer 200, the widest variant is saved in its place and the entry says `resized: true` and
+   `downloadedFrom`; the run prints a line per file and a count (`2 originals unavailable
+   (resized: true) ...`). Repeat that count to the person and list those files in the plan and
+   runbook as originals the live site no longer serves: the gates compare against the resized
+   bytes actually saved, so they do not catch it.
+
 4. **Templates.** Clusters the pages that answered 200 into `capture/templates.json`. On
    WordPress, pages group by template body class first (`home`, `page`, `single-post`,
    `archive`, template classes) and a page whose markup is clearly different (Jaccard below 0.5)
@@ -242,7 +252,9 @@ redirects to a captcha path. Every page then looks the same, so a capture of it 
                           excluded prefix (kept in the HTML, never in internal, never requested)
     scripts.json          third-party vendors with their ids and pages
     media.json            every media file with sources, pages, status, type and bytes; a size
-                          only the REST list names: downloaded: false, "unreferenced size"
+                          only the REST list names: downloaded: false, "unreferenced size";
+                          query-string sizes under variants; resized: true when only a
+                          resized copy could be saved
     css/                  every stylesheet, inline <style> blocks, manifest.json; the sheets a
                           stylesheet @imports (any host, 5 levels deep) too, their manifest
                           entries with importedBy: [importer hrefs] and the importer's pages;

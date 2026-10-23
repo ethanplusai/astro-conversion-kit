@@ -23,12 +23,19 @@ const MEDIA_CONCURRENCY = 6;
 const USAGE = `Usage: node media.mjs --capture <dir> [--download <dir>] [--sizes referenced|all] [--exclude <prefix>[,...]] [--delay <ms>] [--concurrency <n>] [--polite] [--max-file-bytes <n>]
 
 List every media file of a captured site in <capture>/media.json:
-  [{ url, path, source[], referencedBy[], status, contentType, bytes }]
+  [{ url, path, source[], referencedBy[], variants[]?, status, contentType, bytes, resized? }]
 source is where it was found: html (src, data-src, icons, preloads, links to files), srcset,
 css (stylesheets and style attributes), rest (the WordPress media list, every size), sitemap
 (image sitemaps), og (og:image, twitter:image). referencedBy lists the pages that use it.
 Entries are keyed by path: references to the same path (another query string, http or https,
-www or not) are one entry, and the first URL found for it is the one listed and requested.
+www or not) are one entry, and the URL listed and requested is the bare path, with no query
+string. Image hosts that resize by query (WordPress VIP, Jetpack Photon, ?w=1024, ?resize=300,200)
+serve the original at the bare path, so that is what is downloaded; each query string seen is
+listed under variants: [{ query, referencedBy }] and not requested (--sizes all checks and
+downloads them too, saved as <path>%3F<query>, with downloaded: true). When the bare path does
+not answer 200, the largest variant (by its w, width, resize or fit width, else the first seen)
+is downloaded in its place, and the entry says resized: true and downloadedFrom: <url>, so the
+plan can say the original is unavailable.
 Each file is checked with one paced HEAD request (GET when HEAD is refused), several at once.
 By default (--sizes referenced) the files checked and downloaded are every original in the REST
 media list and every file a page, stylesheet, srcset, og tag or sitemap references; a REST
@@ -47,9 +54,9 @@ requested and is listed "blocked-address".
                     pages/, css/, wp-rest/media.json, sitemaps/)
   --download <dir>  also save every file that answers 200 under <dir>/<path>, byte for byte
                     (streamed to disk; a download with no data for 30 s is a network error)
-  --sizes referenced|all  which REST-only image sizes to fetch (default referenced: none;
-                    all: every registered size, for when old emails or other sites may
-                    link to them)
+  --sizes referenced|all  which REST-only image sizes and query-string variants to fetch
+                    (default referenced: none; all: every registered size and every
+                    variant, for when old emails or other sites may link to them)
   --exclude <prefix>[,<prefix>...]  also leave out files whose path starts with one of these
                     (repeatable); the capture's own --exclude prefixes (meta.json excluded)
                     always apply: a file under one is never listed or requested
@@ -223,10 +230,17 @@ export function collectMedia(captureDir, { exclude = [] } = {}) {
     if (url.pathname.endsWith('/') || excludedBy(prefixes, url.pathname)) return;
     const ext = extensionOf(url.pathname);
     if (needsExtension && !MEDIA_EXTENSIONS.has(ext)) return;
-    const entry = found.get(url.pathname) ?? { url: url.href, path: url.pathname, source: new Set(), referencedBy: new Set() };
+    const query = url.search.slice(1);
+    url.search = '';
+    const entry = found.get(url.pathname) ?? { url: url.href, path: url.pathname, source: new Set(), referencedBy: new Set(), variants: new Map() };
     found.set(url.pathname, entry);
     entry.source.add(source);
     if (page) entry.referencedBy.add(page);
+    if (query) {
+      const pages = entry.variants.get(query) ?? new Set();
+      entry.variants.set(query, pages);
+      if (page) pages.add(page);
+    }
   };
 
   for (const record of inventory) {
@@ -258,6 +272,7 @@ export function collectMedia(captureDir, { exclude = [] } = {}) {
       path: e.path,
       source: SOURCE_ORDER.filter((s) => e.source.has(s)),
       referencedBy: [...e.referencedBy].sort(),
+      ...(e.variants.size ? { variants: [...e.variants].map(([query, pages]) => ({ query, referencedBy: [...pages].sort() })) } : {}),
     }))
     .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 }
@@ -330,6 +345,33 @@ function downloadTarget(dir, path) {
   return target.startsWith(root + sep) ? target : null;
 }
 
+// A query-string variant's cache file: <path>%3F<query>, the query kept readable but safe.
+function variantTarget(dir, path, query) {
+  const target = downloadTarget(dir, path);
+  const safe = query.replace(/[^A-Za-z0-9._~=&,+-]/g, (c) => encodeURIComponent(c).replace(/[!'()*]/g, (x) => `%${x.charCodeAt(0).toString(16).toUpperCase()}`));
+  return target ? `${target}%3F${safe}` : null;
+}
+
+// The width a resizing query asks for (w=1024, width=1024, resize=1024,683, fit=1024,683), or null.
+function queryWidth(query) {
+  const params = new URLSearchParams(query);
+  for (const key of ['w', 'width', 'resize', 'fit']) {
+    const n = Number.parseInt(params.get(key) ?? '', 10);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return null;
+}
+
+// The variant to save when the original is unavailable: the widest, else the first seen.
+export function largestVariant(variants) {
+  let best = null;
+  for (const v of variants) {
+    const width = queryWidth(v.query);
+    if (width !== null && (best === null || width > best.width)) best = { variant: v, width };
+  }
+  return best?.variant ?? variants[0];
+}
+
 const fileHolds = (file, bytes) => {
   try {
     return statSync(file).size === bytes;
@@ -388,19 +430,19 @@ async function main() {
 
   // Checks (and downloads) one file; returns its last answer, or null when the run started
   // stopping before an attempt (the file is left for the next run).
-  const check = async (entry, target) => {
+  const check = async (url, target) => {
     let res;
     let viaGet = false;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
       if (stop) return null;
       viaGet = Boolean(args.download);
       if (!viaGet) {
-        res = await request(entry.url, { method: 'HEAD' });
+        res = await request(url, { method: 'HEAD' });
         const length = res.headers?.['content-length'];
         viaGet = HEAD_REFUSED.has(res.status) || (res.status === 200 && length === undefined);
       }
       if (viaGet) {
-        res = await request(entry.url, target
+        res = await request(url, target
           ? { toFile: target, timeoutMs: DOWNLOAD_TIMEOUT_MS }
           : { discardBody: true, timeoutMs: args.download ? DOWNLOAD_TIMEOUT_MS : GET_TIMEOUT_MS });
       }
@@ -417,11 +459,23 @@ async function main() {
     const before = earlier.get(entry.path);
     const target = args.download ? downloadTarget(args.download, entry.path) : null;
     // A file that was too large is asked again: the cap may have been raised.
-    if (before && before.status !== null && !BLOCK_STATUSES.has(before.status) && before.status !== TOO_LARGE) {
+    if (args.sizes === 'all') {
+      for (const variant of entry.variants ?? []) {
+        const vTarget = args.download ? variantTarget(args.download, entry.path, variant.query) : null;
+        const was = before?.variants?.find((v) => v.query === variant.query);
+        if (was?.status === 200 && (!args.download || (vTarget && fileHolds(vTarget, was.bytes)))) {
+          Object.assign(variant, { status: was.status, contentType: was.contentType, bytes: was.bytes });
+          if (args.download) variant.downloaded = true;
+        } else todo.push({ entry, variant, target: vTarget });
+      }
+    }
+    // An earlier answer is kept only for the same URL (an older run may have asked a variant).
+    if (before && before.url === entry.url && before.status !== null && !BLOCK_STATUSES.has(before.status) && before.status !== TOO_LARGE) {
       const downloaded = !args.download || before.status !== 200 || !target || fileHolds(target, before.bytes);
       if (downloaded) {
         Object.assign(entry, { status: before.status, contentType: before.contentType, bytes: before.bytes });
         if (before.location) entry.location = before.location;
+        if (before.resized) Object.assign(entry, { resized: true, downloadedFrom: before.downloadedFrom });
         continue;
       }
     }
@@ -431,32 +485,54 @@ async function main() {
     }
     todo.push({ entry, target });
   }
+  // Originals first, so a stop leaves variants (not originals) for the next run.
+  todo.sort((a, b) => Boolean(a.variant) - Boolean(b.variant));
 
   // Up to --concurrency files at once (the limiter paces the host). "In a row" is the order the
   // answers come back in.
   let done = 0;
   const worker = async () => {
     while (!stop && todo.length > 0) {
-      const { entry, target } = todo.shift();
-      const checked = await check(entry, target);
+      const { entry, variant, target } = todo.shift();
+      const url = variant ? `${entry.url}?${variant.query}` : entry.url;
+      let checked = await check(url, target);
       if (!checked) return;
-      const { res, viaGet } = checked;
-      const blocked = BLOCK_STATUSES.has(res.status);
-      if (blocked && !GIVE_UP.has(res.status)) {
+      const stops = (res) => BLOCK_STATUSES.has(res.status) && !GIVE_UP.has(res.status);
+      if (stops(checked.res)) {
         stop ??= entry;
         return;
       }
-      if (blocked) streak.add(entry.path);
+      // The original is not at the bare path: save the largest resized copy in its place, marked.
+      let fallback = null;
+      if (!variant && checked.res.status !== 200 && entry.variants?.length) {
+        const chosen = largestVariant(entry.variants);
+        const tried = await check(`${entry.url}?${chosen.query}`, target);
+        if (!tried) return;
+        if (stops(tried.res)) {
+          stop ??= entry;
+          return;
+        }
+        if (tried.res.status === 200) {
+          process.stderr.write(`${entry.path}: the original answered ${checked.res.status}; saved the resized copy ?${chosen.query} instead (resized: true)\n`);
+          fallback = `${entry.url}?${chosen.query}`;
+          checked = tried;
+        }
+      }
+      const { res, viaGet } = checked;
+      if (BLOCK_STATUSES.has(res.status)) streak.add(url);
       else streak.clear();
 
-      entry.status = res.status;
-      entry.contentType = res.headers?.['content-type'] ?? null;
+      const into = variant ?? entry;
+      into.status = res.status;
+      into.contentType = res.headers?.['content-type'] ?? null;
       const length = Number(res.headers?.['content-length']);
-      entry.bytes = typeof res.status !== 'number' || res.status === 0 ? null : viaGet ? res.bytes : Number.isFinite(length) ? length : null;
-      if (res.status === 0 || typeof res.status !== 'number') entry.error = res.error ?? 'network error';
+      into.bytes = typeof res.status !== 'number' || res.status === 0 ? null : viaGet ? res.bytes : Number.isFinite(length) ? length : null;
+      if (res.status === 0 || typeof res.status !== 'number') into.error = res.error ?? 'network error';
       if (res.status >= 300 && res.status < 400 && res.headers?.location) {
-        entry.location = new URL(res.headers.location, entry.url).href;
+        into.location = new URL(res.headers.location, url).href;
       }
+      if (fallback) Object.assign(entry, { resized: true, downloadedFrom: fallback });
+      if (variant && args.download && res.status === 200) variant.downloaded = true;
       if (streak.size >= BLOCK_LIMIT) stop ??= entry;
       done += 1;
       // Save progress now and then, so a run that is killed resumes without asking again.
@@ -480,6 +556,16 @@ async function main() {
   const checked = media.length - listedOnly;
   const count = (n) => n.toLocaleString('en-US');
   console.log(`${count(checked)} originals + referenced sizes (${args.download ? 'downloaded' : 'checked'}), ${count(listedOnly)} unreferenced ${listedOnly === 1 ? 'size' : 'sizes'} (listed only)`);
+  const varied = media.filter((m) => m.variants?.length);
+  if (varied.length) {
+    const n = varied.reduce((sum, m) => sum + m.variants.length, 0);
+    const how = args.sizes !== 'all' ? 'listed only' : args.download ? 'downloaded' : 'checked';
+    console.log(`${count(n)} query-string ${n === 1 ? 'variant' : 'variants'} of ${count(varied.length)} ${varied.length === 1 ? 'file' : 'files'} (${how})`);
+  }
+  const resized = media.filter((m) => m.resized).length;
+  if (resized) {
+    console.log(`${count(resized)} ${resized === 1 ? 'original' : 'originals'} unavailable (resized: true): a resized copy was saved in ${resized === 1 ? 'its' : 'their'} place`);
+  }
   console.log(`Listed ${media.length} media files (${checked - ok.length} not 200, ${bytes} bytes) in ${outFile}${saved}.`);
 }
 

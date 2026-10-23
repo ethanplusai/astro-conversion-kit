@@ -547,12 +547,110 @@ test('--max-file-bytes records a larger file "too-large" and saves the rest, str
   }
 });
 
+// An image host that serves every size at the same path with a query (WordPress VIP, Jetpack
+// Photon): the bare path is the original, each ?w= / ?resize= is a smaller copy.
+const ORIGINAL = Buffer.from('the full-size original bytes');
+const resizedBody = (query) => Buffer.from(`resized ${query}`);
+function queryHost({ bareStatus = 200 } = {}) {
+  return serve((req, res) => {
+    const [, query = ''] = req.url.split('?');
+    if (!query && bareStatus !== 200) {
+      res.writeHead(bareStatus);
+      res.end();
+      return;
+    }
+    const body = query ? resizedBody(query) : ORIGINAL;
+    res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Content-Length': body.length });
+    res.end(req.method === 'HEAD' ? undefined : body);
+  });
+}
+
+test('a path seen only with query-string sizes downloads the bare original and lists each variant', async () => {
+  const server = await queryHost();
+  try {
+    const dir = tinyCapture(server.origin, '<html><body><img src="/up/photo.jpg?quality=99&amp;w=1024" srcset="/up/photo.jpg?w=300 300w, /up/photo.jpg?quality=99&amp;w=1024 1024w"></body></html>');
+    const files = join(dir, 'files');
+    const result = await run(MEDIA, ['--capture', dir, '--download', files, '--delay', '0']);
+    assert.equal(result.code, 0, result.stderr);
+    const [entry, ...rest] = readJson(join(dir, 'media.json'));
+    assert.deepEqual(rest, []);
+    assert.deepEqual(entry, {
+      url: `${server.origin}/up/photo.jpg`, path: '/up/photo.jpg', source: ['html', 'srcset'], referencedBy: ['/'],
+      variants: [{ query: 'quality=99&w=1024', referencedBy: ['/'] }, { query: 'w=300', referencedBy: ['/'] }],
+      status: 200, contentType: 'image/jpeg', bytes: ORIGINAL.length,
+    });
+    assert.deepEqual(server.requests, ['GET /up/photo.jpg'], 'only the original is requested');
+    assert.deepEqual(readFileSync(join(files, 'up/photo.jpg')), ORIGINAL);
+    assert.match(result.stdout, /^2 query-string variants of 1 file \(listed only\)$/m);
+
+    server.requests.length = 0;
+    const all = await run(MEDIA, ['--capture', dir, '--download', files, '--delay', '0', '--sizes', 'all']);
+    assert.equal(all.code, 0, all.stderr);
+    assert.deepEqual(server.requests.sort(), ['GET /up/photo.jpg?quality=99&w=1024', 'GET /up/photo.jpg?w=300'], 'the original already saved is kept');
+    const [again] = readJson(join(dir, 'media.json'));
+    assert.equal(again.bytes, ORIGINAL.length);
+    for (const query of ['quality=99&w=1024', 'w=300']) {
+      const variant = again.variants.find((v) => v.query === query);
+      assert.deepEqual(variant, { query, referencedBy: ['/'], status: 200, contentType: 'image/jpeg', bytes: resizedBody(query).length, downloaded: true });
+      assert.deepEqual(readFileSync(join(files, `up/photo.jpg%3F${query}`)), resizedBody(query));
+    }
+    assert.deepEqual(readFileSync(join(files, 'up/photo.jpg')), ORIGINAL, 'the original is not overwritten by a variant');
+    assert.match(all.stdout, /^2 query-string variants of 1 file \(downloaded\)$/m);
+  } finally {
+    await server.close();
+  }
+});
+
+test('a query-string image whose bare path does not answer 200 falls back to the largest variant, marked resized', async () => {
+  const server = await queryHost({ bareStatus: 404 });
+  try {
+    const dir = tinyCapture(server.origin, '<html><body><img src="/up/a.jpg?w=300" srcset="/up/a.jpg?resize=1024,683 1024w, /up/a.jpg?w=768 768w"><img src="/up/b.jpg?crop=1"></body></html>');
+    const files = join(dir, 'files');
+    const result = await run(MEDIA, ['--capture', dir, '--download', files, '--delay', '0']);
+    assert.equal(result.code, 0, result.stderr);
+    const media = readJson(join(dir, 'media.json'));
+    const a = media.find((m) => m.path === '/up/a.jpg');
+    assert.equal(a.url, `${server.origin}/up/a.jpg`);
+    assert.equal(a.status, 200);
+    assert.equal(a.resized, true);
+    assert.equal(a.downloadedFrom, `${server.origin}/up/a.jpg?resize=1024,683`);
+    assert.equal(a.bytes, resizedBody('resize=1024,683').length);
+    assert.deepEqual(readFileSync(join(files, 'up/a.jpg')), resizedBody('resize=1024,683'));
+    // No width to compare: the first variant seen.
+    const b = media.find((m) => m.path === '/up/b.jpg');
+    assert.equal(b.resized, true);
+    assert.equal(b.downloadedFrom, `${server.origin}/up/b.jpg?crop=1`);
+    assert.match(result.stderr, /\/up\/a\.jpg: the original answered 404; saved the resized copy \?resize=1024,683 instead/);
+    assert.match(result.stdout, /^2 originals unavailable \(resized: true\): a resized copy was saved in their place$/m);
+  } finally {
+    await server.close();
+  }
+});
+
+test('a query-string image with no working bare path or variant keeps the original answer', async () => {
+  const server = await serve((req, res) => {
+    res.writeHead(404);
+    res.end();
+  });
+  try {
+    const dir = tinyCapture(server.origin, '<html><body><img src="/up/c.jpg?w=300"></body></html>');
+    const result = await run(MEDIA, ['--capture', dir, '--delay', '0']);
+    assert.equal(result.code, 0, result.stderr);
+    const [c] = readJson(join(dir, 'media.json'));
+    assert.equal(c.status, 404);
+    assert.equal(c.resized, undefined);
+  } finally {
+    await server.close();
+  }
+});
+
 test('media.mjs usage errors exit 2 and --help prints usage', async () => {
   const help = await run(MEDIA, ['--help']);
   assert.equal(help.code, 0);
   assert.match(help.stdout, /Usage: node media\.mjs --capture <dir>/);
   assert.match(help.stdout, /keyed by path/);
-  assert.match(help.stdout, /first URL/);
+  assert.match(help.stdout, /bare path/);
+  assert.match(help.stdout, /resized: true/);
   assert.equal((await run(MEDIA, [])).code, 2);
   assert.equal((await run(MEDIA, ['--capture', join(work, 'missing')])).code, 2);
 });
