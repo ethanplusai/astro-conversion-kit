@@ -55,7 +55,10 @@ the same basename. inline:<n> entries (one <style> block each) match every inlin
 file (inline-<slug>.css, a page's blocks) that contains their text, trimmed, and
 serves one of their pages; an inline file's kept rules follow a comment naming its
 pages and file. A sheet linked with a media attribute other than "all" on every
-page (read from --capture when its inventory exists) is wrapped in that @media.
+page (read from --capture when its inventory exists) is wrapped in that @media;
+its @layer statements and kept @import rules stay at the top of the file, in order,
+each @import with that media added (one with its own media list is kept as written,
+with a line on stderr).
 
 Per-page inline rules (--single-sheet): when two inline files have a rule with the
 same selector (inside the same @media, @supports or @layer) and other declarations,
@@ -257,9 +260,11 @@ function urlReplacements(ast, text, base, siteOrigin) {
     enter(node) {
       if (node.type === 'Url') {
         if (this.atrule && this.atrule.name.toLowerCase() === 'namespace') return;
+        const original = sourceOf(text, node);
+        // A url( css-tree recovered from (no closing parenthesis) is left as written.
+        if (!original.trimEnd().endsWith(')')) return;
         const next = rewriteRef(node.value, base, siteOrigin);
         if (next === null) return;
-        const original = sourceOf(text, node);
         replacements.push({ start: node.loc.start.offset, end: node.loc.end.offset, text: `url(${quoteLike(original, next)})` });
       } else if (node.type === 'String' && this.atrule && this.atrule.name.toLowerCase() === 'import'
         && this.atrulePrelude && this.atrule.prelude.children?.first === node) {
@@ -707,6 +712,18 @@ function linkMedia(files, pages) {
   return new Map([...seen].map(([name, list]) => [name, list.has(null) ? null : [...list].join(', ')]));
 }
 
+// A hoisted @import rule of a sheet linked under media: the media list added when the rule has
+// none; one with its own media list is kept as written (two lists cannot be joined in general).
+function importUnder(rule, media, name) {
+  const node = csstree.parse(rule, { positions: true }).children.first;
+  const parts = node?.type === 'Atrule' ? importParts(node, { text: rule, base: null, siteOrigin: null }) : null;
+  if (!parts || parts.media) {
+    console.error(`css-prune: ${rule.trim()} in ${name} has its own media list; kept as written, not under the link's media (${media})`);
+    return rule;
+  }
+  return rule.replace(/\s*;?\s*$/, ` ${media};`);
+}
+
 // --single-sheet: one stylesheet of every captured file in source order, colliding per-page
 // inline rules split into page sheets. A sheet every page links with a media attribute is
 // wrapped in that @media (kept whole when no tested width satisfies it).
@@ -725,7 +742,13 @@ export function prune({ css, coverage, widths = DEFAULT_WIDTHS, origin, capture 
     const condition = media.get(file.name) ?? null;
     const untested = condition !== null && !mediaTested(condition, widths);
     if (untested) report.keptBecause.untestedMedia += 1;
-    const text = render(file, { whole: untested, emitted, header, inlineKept });
+    const own = newHeader();
+    const text = render(file, { whole: untested, emitted, header: own, inlineKept });
+    // CSS allows @import and @layer statements only at the top, so a wrapped sheet's stay there,
+    // in order; its @import takes the link's media.
+    header.layers.push(...own.layers);
+    header.namespaces.push(...own.namespaces);
+    header.imports.push(...(condition ? own.imports.map((rule) => importUnder(rule, condition, file.name)) : own.imports));
     if (isInline(file)) bodies.push({ file, before: text });
     else if (text) bodies.push(condition ? wrapImport(text, { layer: null, supports: null, media: condition }) : text);
   }

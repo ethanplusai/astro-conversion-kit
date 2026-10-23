@@ -842,6 +842,35 @@ test('--single-sheet wraps a sheet linked with a media attribute in that @media 
   assert.equal(readJson(join(dir, 'r.json')).mode, 'single-sheet');
 });
 
+test('--single-sheet keeps a media-linked sheet\'s hoisted @import and @layer lines at the top, in order, the @import under the link\'s media', async () => {
+  const href = `${SITE_ORIGIN}/wp-content/themes/t/print.css`;
+  const text = '@layer base;\n@import url("https://cdn.example.org/p.css");\n@import url("https://cdn.example.org/q.css") screen;\n.print-only { display: block; }\n';
+  const theme = '.t { color: red; }\n';
+  const dir = pageCapture('single-hoist', {
+    sheets: [{ file: '1.css', href: `${SITE_ORIGIN}/wp-content/themes/t/a.css`, text: theme }, { file: '2.css', href, text }],
+    pages: [{ path: '/', slug: 'home', head: '<link rel="stylesheet" href="/wp-content/themes/t/a.css">\n<link rel="stylesheet" href="/wp-content/themes/t/print.css" media="print">' }],
+  });
+  const coverage = join(dir, 'coverage.json');
+  writeFileSync(coverage, JSON.stringify({ [`${SITE_ORIGIN}/wp-content/themes/t/a.css`]: { text: theme, usedRanges: [[0, theme.length]] }, [href]: { text, usedRanges: [] } }));
+  const out = join(dir, 'site.css');
+  const result = await pruneCli(['--single-sheet', '--css', join(dir, 'css'), '--coverage', coverage, '--out', out, '--report', join(dir, 'r.json')]);
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(readFileSync(out, 'utf8'), [
+    '@layer base;',
+    '@import url("https://cdn.example.org/p.css") print;',
+    '@import url("https://cdn.example.org/q.css") screen;',
+    '.t { color: red; }',
+    '@media print {\n.print-only { display: block; }\n}',
+    '',
+  ].join('\n'));
+  assert.match(result.stderr, /q\.css.*has its own media list.*print/);
+});
+
+test('a malformed url() is left as written, never rewritten', () => {
+  const result = pruneCss('.a { b: url(}', [[0, 13]], { base: 'https://www.example.com/x/a.css', siteOrigin: 'https://www.example.com' });
+  assert.equal(result.css, '.a { b: url(}');
+});
+
 test('css-prune usage: --out needs --single-sheet, and per-sheet mode needs the capture\'s inventory', async () => {
   const { dir, coverage } = twoSheetCapture('usage');
   const out = await perSheetCli(dir, coverage, ['--out', join(dir, 'site.css')]);
