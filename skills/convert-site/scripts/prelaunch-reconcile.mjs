@@ -14,7 +14,7 @@ import { pageHead } from './lib/page-head.mjs';
 const HELP = `Usage: node prelaunch-reconcile.mjs --findings <pre-launch bundle>/gate.json
                                   --baseline baseline --plan docs/plan.md
                                   [--capture capture] [--dir .] [--dist <dir>/dist]
-                                  [--state .conversion/state.json] [--json]
+                                  [--state .conversion/state.json] [--media-plan <file>] [--json]
 
 Reads the pre-launch bundle (gate.json, or findings.json with gate.json beside it) and sorts
 every failing check into accepted or blocking.
@@ -45,8 +45,22 @@ Narrow rules that need no decision:
                                   Sitemap: line on that host in <dist>/robots.txt is one the live
                                   robots.txt (capture/robots.txt) carried verbatim (a sister
                                   site's sitemap the default build keeps, as live had it)
-Any other failing check blocks, a crashed one included, and so does a check whose evidence was
-cut at pre-launch's listing cap (the unlisted rows cannot be compared).
+  output.og-image                 a row "<image> does not exist in the build" whose path the
+                                  baseline media lists, under the media prefix of a media plan in
+                                  mode store or live-temporary, with a rewrite for that prefix in
+                                  <dir>/vercel.json, a _redirects line (<dist> or <dir>/public) or
+                                  a Pages Function under <dir>/functions/: the rewrite serves it
+output.noindex-utility-pages rows are pages: accepted when live had the same page indexable
+(no noindex in baseline/seo.json) and a decision names the check, or the page and "noindex",
+"robots" or "indexable".
+pre-launch lists at most 20 rows per check, and none of its outputs (gate.json, findings.json,
+report.md) holds the rest. A check cut at that cap is accepted only when every listed row is, a
+decision row names the check id, and the count in its summary equals live's: pages without a
+title or description plus titles or descriptions shared by indexable pages (output.titles,
+output.descriptions), pages without exactly one h1 (output.h1), indexable demo, preview,
+test or confirmation pages (output.noindex-utility-pages), from baseline/seo.json. Any other
+cut check blocks (the unlisted rows cannot be compared), and so does any other failing check, a
+crashed one included.
 
   --findings <file>  gate.json or findings.json from pre-launch's --out bundle (required)
   --baseline <dir>   the baseline folder (required)
@@ -56,6 +70,7 @@ cut at pre-launch's listing cap (the unlisted rows cannot be compared).
   --dir <dir>        the site repository, for hygiene.pushed (default: .)
   --dist <dir>       the build, for predecessor.coverage and output.robots-txt (default: <dir>/dist)
   --state <file>     the run state with needsYou (default: .conversion/state.json)
+  --media-plan <file>  the media plan, for output.og-image (default: <dir>/docs/media-plan.json)
   --json             print { failing, accepted[], blocking[] } instead of lines
   --help             show this help
 
@@ -212,6 +227,8 @@ export function loadBaseline(dir, captureDir = null) {
     hadSitemap: () => read('sitemaps.json', []).length > 0 || captured(join('sitemaps', 'index.json'), []).some((s) => s.status === 200),
     // The pages the crawl found answering 200 (not media).
     crawled: () => routes.filter((r) => r.status === 200 && r.kind !== 'media').map((r) => r.path),
+    // Every page live served, the captured 404 page included, as [path, seo row].
+    pages: () => Object.entries(allSeo),
   };
 }
 
@@ -246,6 +263,7 @@ const FIELD_WORDS = {
   'og:image': /\bog:image\b|\bog-image\b|\bog image\b|\bshare image\b/i,
   favicon: /favicon|\bicons?\b|apple-touch-icon|manifest/i,
   'placeholder text': /placeholder/i,
+  robots: /\bnoindex\b|\brobots\b|\bindexable\b|\bindexed\b/i,
 };
 
 // The decision accepting a row: one that names the check id, or names the row's path and its
@@ -322,11 +340,16 @@ const ROWS = {
     if (m) return check(m[1], () => false);
     return null;
   },
-  'output.og-image': (base, value, detail) => {
+  'output.og-image': (base, value, detail, env) => {
     if (detail.startsWith('none of the')) return [onPage(base, value, 'og:image', value, (seo) => (empty(seo.og?.image) ? null : `live recorded og:image ${seo.og.image}`))];
     let m = /^(\S+) does not exist in the build \(used by (.+)\)$/.exec(value);
     if (m) {
-      if (base.isMedia(pathnameOf(m[1]))) return [{ text: value, field: 'og:image', paths: [], ok: false, reason: 'live served this image' }];
+      const path = pathnameOf(m[1]);
+      if (base.isMedia(path)) {
+        const served = rewriteServes(env, path);
+        if (served) return [{ text: value, field: 'og:image', paths: [], ok: true, reason: null, decision: served, note: 'served by the media rewrite' }];
+        return [{ text: value, field: 'og:image', paths: [], ok: false, reason: 'live served this image' }];
+      }
       return m[2].split(', ').map((rel) => onPage(base, rel, 'og:image', value, (seo) => (sameUrl(seo.og?.image, m[1]) ? null : `live recorded og:image ${seo.og?.image ?? 'none'}`)));
     }
     m = /^(\S+) is (an SVG|not a recognised image|a \S+ whose dimensions|\d+x\d+)/.exec(value);
@@ -335,6 +358,11 @@ const ROWS = {
       return [{ text: value, field: 'og:image', paths: pages, ok: pages.length > 0, reason: pages.length ? null : 'live used no such og:image' }];
     }
     return null;
+  },
+  'output.noindex-utility-pages': (base, value) => {
+    const m = /^(\S+) \((\S+)\) has no noindex$/.exec(value);
+    if (!m) return null;
+    return [onPage(base, m[1], 'robots', value, (seo) => (/\bnoindex\b/i.test(seo.robots ?? '') ? `live recorded robots "${seo.robots}"` : null))];
   },
   'output.favicon-set': (base, value) => {
     const row = (paths, ok, reason) => [{ text: value, field: 'favicon', paths, ok, reason: ok ? null : reason }];
@@ -354,6 +382,53 @@ const ROWS = {
     if (value === 'no page links to a web app manifest') return row([], !base.anyFile(/(\.webmanifest|manifest\.json)$/), 'live served a manifest');
     return null;
   },
+};
+
+// The media plan's word for an image the build does not hold but the media rewrite serves: the
+// plan keeps media off the repo (store or live-temporary), the path is under its prefix, and a
+// rewrite for the prefix is configured. null otherwise.
+function rewriteServes(env, path) {
+  const plan = env.mediaPlan;
+  if (!plan || !['store', 'live-temporary'].includes(plan.mode) || typeof plan.prefix !== 'string') return null;
+  const prefix = `/${plan.prefix.replace(/^\/+|\/+$/g, '')}/`;
+  if (!path.startsWith(prefix)) return null;
+  const read = (file) => (existsSync(file) ? readFileSync(file, 'utf8') : null);
+  let vercel = [];
+  try {
+    vercel = JSON.parse(read(join(env.dir, 'vercel.json')) ?? '{}').rewrites ?? [];
+  } catch {
+    vercel = [];
+  }
+  const redirects = [join(env.dist, '_redirects'), join(env.dir, 'public', '_redirects')].map(read).filter(Boolean).join('\n');
+  const covered = vercel.some((r) => typeof r?.source === 'string' && r.source.startsWith(prefix))
+    || redirects.split('\n').some((line) => line.trim().startsWith(`${prefix}*`))
+    || existsSync(join(env.dir, 'functions', ...prefix.split('/').filter(Boolean), '[[path]].js'));
+  return covered ? `media plan (${plan.mode})` : null;
+}
+
+// Live's count for a check pre-launch cut at its listing cap, from baseline/seo.json, or null
+// when the check has no count to compare.
+const UTILITY_PATH = /thank|thanks|confirm|success|demo|preview|test/i;
+const isNoindex = (seo) => /\bnoindex\b/i.test(seo.robots ?? '');
+function headCount(base, field) {
+  let count = 0;
+  const groups = new Map();
+  for (const [, seo] of base.pages()) {
+    if (empty(seo[field])) {
+      count += 1;
+      continue;
+    }
+    if (isNoindex(seo)) continue;
+    const key = String(seo[field]).trim().toLowerCase();
+    groups.set(key, (groups.get(key) ?? 0) + 1);
+  }
+  return count + [...groups.values()].filter((n) => n > 1).length;
+}
+const LIVE_COUNTS = {
+  'output.titles': (base) => headCount(base, 'title'),
+  'output.descriptions': (base) => headCount(base, 'description'),
+  'output.h1': (base) => base.pages().filter(([, seo]) => (seo.h1 ?? []).length !== 1).length,
+  'output.noindex-utility-pages': (base) => base.pages().filter(([path, seo]) => path !== NOT_FOUND && UTILITY_PATH.test(path) && !isNoindex(seo)).length,
 };
 
 // placeholders.copy: a page row is live when its baseline text, title or description shows the
@@ -490,6 +565,21 @@ function noSitemapRow(text, base, decisions, env) {
   return { text, ok: true, reason: null, decisions: ids };
 }
 
+// The row standing for the rows pre-launch did not list: accepted when a decision names the check
+// and live had the same count (LIVE_COUNTS).
+function cappedRow(check, count, base, decisions) {
+  const listed = check.evidence.length;
+  const decision = decisionNaming(decisions, [check.id]);
+  const live = LIVE_COUNTS[check.id]?.(base) ?? null;
+  if (decision && live === count) {
+    return { text: check.detail, field: 'count', paths: [], ok: true, reason: null, decision, note: `${count} rows, ${listed} listed: live had ${live} too` };
+  }
+  let why = 'the rest cannot be compared with live';
+  if (live !== null && decision) why = `live had ${live}, so the count does not match`;
+  else if (live !== null) why = `no decision row names ${check.id} (live had ${live})`;
+  return { text: check.detail, paths: [], ok: false, reason: `only ${listed} of ${count} rows listed; ${why}` };
+}
+
 export function reconcile(failing, base, decisions, env = { dir: '.', dist: 'dist', state: join('.conversion', 'state.json') }) {
   const accepted = [];
   const blocking = [];
@@ -504,14 +594,14 @@ export function reconcile(failing, base, decisions, env = { dir: '.', dist: 'dis
     let rows;
     if (check.id === 'placeholders.copy') rows = placeholderRows(base, check.evidence);
     else if (parse) {
-      rows = check.evidence.flatMap(({ value }) => parse(base, String(value), check.detail)
+      rows = check.evidence.flatMap(({ value }) => parse(base, String(value), check.detail, env)
         ?? [{ text: String(value), paths: [], ok: false, reason: 'row not understood' }]);
     }
     if (!rows || rows.length === 0) {
       blocking.push({ id: check.id, detail: check.detail, rows: [] });
       continue;
     }
-    for (const row of rows.filter((r) => r.ok)) {
+    for (const row of rows.filter((r) => r.ok && !r.decision)) {
       row.decision = decisionFor(decisions, check.id, row);
       if (row.decision === null) {
         row.ok = false;
@@ -520,9 +610,7 @@ export function reconcile(failing, base, decisions, env = { dir: '.', dist: 'dis
       }
     }
     const count = listedCount(check.detail);
-    if (count > check.evidence.length) {
-      rows.push({ text: check.detail, paths: [], ok: false, reason: `only ${check.evidence.length} of ${count} rows listed; the rest cannot be compared with live` });
-    }
+    if (count > check.evidence.length) rows.push(cappedRow(check, count, base, decisions));
     if (rows.every((r) => r.ok)) {
       accepted.push({ id: check.id, rule: 'live', decision: [...new Set(rows.map((r) => r.decision))].join(', '), rows });
     } else blocking.push({ id: check.id, detail: check.detail, rows });
@@ -539,6 +627,7 @@ function lines(result) {
       else if (a.rule === 'no-remote') out.push(`accepted  ${a.id}: ${r.text} — no remote yet; the push is on the needs-you list`);
       else if (a.rule === 'live-robots') out.push(`accepted  ${a.id}: ${r.text} — the live robots.txt carried this Sitemap: line`);
       else if (a.rule === 'no-sitemap') out.push(`accepted  ${a.id}: ${r.text} — live publishes no sitemap; every page the crawl found is built${a.decision ? ` or decided (${a.decision})` : ''}`);
+      else if (r.note) out.push(`accepted  ${a.id}: ${r.text} — ${r.note} (${r.decision})`);
       else out.push(`accepted  ${a.id}: ${r.paths.join(', ') || r.text} ${r.field} — reproduced from live (${r.decision})`);
     }
   }
@@ -555,7 +644,7 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--help' || arg === '--json') opts[arg.slice(2)] = true;
-    else if (['--findings', '--baseline', '--plan', '--capture', '--dir', '--dist', '--state'].includes(arg)) {
+    else if (['--findings', '--baseline', '--plan', '--capture', '--dir', '--dist', '--state', '--media-plan'].includes(arg)) {
       const value = argv[i + 1];
       if (value === undefined || value.startsWith('--')) throw new Error(`${arg} needs a value`);
       opts[arg.slice(2)] = value;
@@ -578,10 +667,14 @@ function main() {
     for (const name of ['findings', 'baseline', 'plan']) if (!opts[name]) throw new Error(`--${name} is required`);
     for (const name of ['findings', 'plan']) if (!existsSync(opts[name])) throw new Error(`${opts[name]} not found`);
     const dir = opts.dir ?? '.';
+    const planFile = opts['media-plan'] ?? join(dir, 'docs', 'media-plan.json');
+    if (opts['media-plan'] && !existsSync(planFile)) throw new Error(`${planFile} not found`);
+    const mediaPlan = existsSync(planFile) ? JSON.parse(readFileSync(planFile, 'utf8')) : null;
     result = reconcile(loadFailing(opts.findings), loadBaseline(opts.baseline, opts.capture ?? 'capture'), loadDecisions(opts.plan), {
       dir,
       dist: opts.dist ?? join(dir, 'dist'),
       state: opts.state ?? join(dir, '.conversion', 'state.json'),
+      mediaPlan,
     });
   } catch (err) {
     console.error(`prelaunch-reconcile: ${err.message}`);

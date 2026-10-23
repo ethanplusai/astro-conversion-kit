@@ -426,6 +426,87 @@ test('output.robots-txt is accepted when every off-host Sitemap: line is one the
   assert.equal(blocked.code, 1, 'any other robots.txt problem still blocks');
 });
 
+// A copy of the baseline with seo.json rows changed by edit(seo) and extra routes appended.
+function baselineWith(name, edit, routes = []) {
+  const dir = join(root, name);
+  cpSync(baseline, dir, { recursive: true });
+  const seo = JSON.parse(readFileSync(join(dir, 'seo.json'), 'utf8'));
+  edit(seo);
+  writeFileSync(join(dir, 'seo.json'), JSON.stringify(seo));
+  const list = JSON.parse(readFileSync(join(dir, 'routes.json'), 'utf8'));
+  writeFileSync(join(dir, 'routes.json'), JSON.stringify([...list, ...routes]));
+  return dir;
+}
+const withBaseline = (dir, checks, opts = {}) => run(['--findings', gateFile(checks), '--baseline', dir, '--plan', opts.planFile ?? plan, '--capture', capture, ...(opts.extra ?? []), '--json']);
+
+test('a check past the listing cap is accepted when a decision names it and the count equals live\'s', async () => {
+  // 25 live pages without a description, every other page with its own.
+  const many = baselineWith('baseline-many', (seo) => {
+    for (const path of Object.keys(seo)) seo[path].description = `about ${path}`;
+    for (let i = 1; i <= 25; i += 1) seo[`/p${i}/`] = { ...seo['/about/'], title: `Page ${i}`, description: null };
+  });
+  const rows = Array.from({ length: 20 }, (_, i) => `p${i + 1}/index.html has no meta description`);
+  const check = (count) => failing('output.descriptions', `${count} meta description problems across 39 pages`, rows);
+  const planFile = planWith('plan-many', ['d5', 'output.descriptions: 25 pages without a description on live']);
+  const ok = await withBaseline(many, [check(25)], { planFile });
+  assert.equal(ok.code, 0, ok.stdout);
+  const [accepted] = parsed(ok).accepted;
+  assert.equal(accepted.decision, 'd5');
+  assert.equal(accepted.rows.length, 21);
+  assert.match(accepted.rows.at(-1).text, /25 meta description problems/);
+  const more = await withBaseline(many, [check(26)], { planFile });
+  assert.equal(more.code, 1);
+  assert.match(parsed(more).blocking[0].rows.at(-1).reason, /only 20 of 26 rows listed.*live had 25/);
+  const undecided = await withBaseline(many, [check(25)], { planFile: planWith('plan-many-path', ['d5', 'description of `/p1/` kept as live']) });
+  assert.equal(undecided.code, 1, 'a decision naming one row does not cover the unlisted ones');
+  assert.match(parsed(undecided).blocking[0].rows.at(-1).reason, /only 20 of 25 rows listed/);
+});
+
+test('output.og-image: a missing image under the media prefix is accepted when the plan keeps media off the repo and the rewrite covers it', async () => {
+  const media = JSON.parse(readFileSync(join(baseline, 'media.json'), 'utf8'));
+  const image = media.find((m) => m.path.startsWith('/wp-content/uploads/') && m.path.endsWith('.jpg')).path;
+  const row = (path) => failing('output.og-image', '1 og:image does not resolve', [`https://www.example.com${path} does not exist in the build (used by about/index.html)`], 'url');
+  const site = (name, { mode, rewrite = true }) => {
+    const dir = join(root, name);
+    mkdirSync(join(dir, 'docs'), { recursive: true });
+    writeFileSync(join(dir, 'docs', 'media-plan.json'), JSON.stringify({ mode, prefix: '/wp-content/uploads/' }));
+    writeFileSync(join(dir, 'vercel.json'), JSON.stringify({ rewrites: rewrite ? [{ source: '/wp-content/uploads/:path*', destination: 'https://www.example.com/wp-content/uploads/:path*' }] : [] }));
+    return ['--dir', dir];
+  };
+  const ok = await reconcile([row(image)], { planFile: bare, extra: site('site-live-temporary', { mode: 'live-temporary' }) });
+  assert.equal(ok.code, 0, ok.stdout);
+  assert.match(parsed(ok).accepted[0].decision, /media plan \(live-temporary\)/);
+  const store = await reconcile([row(image)], { planFile: bare, extra: site('site-store', { mode: 'store' }), json: false });
+  assert.equal(store.code, 0, store.stdout);
+  assert.match(store.stdout, /served by the media rewrite/);
+  const repo = await reconcile([row(image)], { planFile: bare, extra: site('site-repo', { mode: 'repo' }) });
+  assert.equal(repo.code, 1, 'in repo mode the image belongs in the build');
+  assert.match(parsed(repo).blocking[0].rows[0].reason, /live served this image/);
+  const noRewrite = await reconcile([row(image)], { planFile: bare, extra: site('site-no-rewrite', { mode: 'store', rewrite: false }) });
+  assert.equal(noRewrite.code, 1);
+  const unknown = await reconcile([row('/wp-content/uploads/2026/01/not-captured.jpg')], { planFile: bare, extra: site('site-unknown', { mode: 'store' }) });
+  assert.equal(unknown.code, 1, 'a path the baseline media does not list');
+});
+
+test('output.noindex-utility-pages: accepted when live indexed the same page and a decision names it', async () => {
+  const demo = baselineWith('baseline-demo', (seo) => {
+    seo['/demo-gallery/'] = { ...seo['/about/'], title: 'Demo gallery', robots: 'index, follow' };
+    seo['/test-page/'] = { ...seo['/about/'], title: 'Test page', robots: 'noindex, follow' };
+  }, [{ path: '/demo-gallery/', status: 200, kind: 'page', template: 'page', noindex: false, snapshot: null, foundBy: ['crawl'] }]);
+  const check = (rels) => failing('output.noindex-utility-pages', `${rels.length} confirmation, preview or demo page${rels.length === 1 ? '' : 's'} can be indexed`,
+    rels.map((rel) => `${rel}/index.html (/${rel}) has no noindex`), 'file');
+  const planFile = planWith('plan-demo', ['d6', '`/demo-gallery/` is indexable on live, kept indexable']);
+  const ok = await withBaseline(demo, [check(['demo-gallery'])], { planFile });
+  assert.equal(ok.code, 0, ok.stdout);
+  assert.equal(parsed(ok).accepted[0].decision, 'd6');
+  const undecided = await withBaseline(demo, [check(['demo-gallery'])], { planFile: bare });
+  assert.equal(undecided.code, 1);
+  assert.match(parsed(undecided).blocking[0].rows[0].reason, /no decision row/);
+  const liveNoindex = await withBaseline(demo, [check(['test-page'])], { planFile: planWith('plan-test', ['d6', 'output.noindex-utility-pages']) });
+  assert.equal(liveNoindex.code, 1, 'live kept that page out of the index');
+  assert.match(parsed(liveNoindex).blocking[0].rows[0].reason, /live recorded robots "noindex, follow"/);
+});
+
 test('usage errors exit 2', async () => {
   assert.equal((await run(['--findings', 'nope.json', '--baseline', baseline])).code, 2);
   assert.equal((await run(['--findings', join(root, 'missing.json'), '--baseline', baseline, '--plan', plan])).code, 2);

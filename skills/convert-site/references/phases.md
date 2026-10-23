@@ -386,7 +386,12 @@ is on the needs-you list; also `placeholders.form-id` while the form id is missi
 then a draft, `forms.md`); the two predecessor slash checks when every row is a trailing-slash
 rule or a slash-only redirect (a known launch-skills limitation); and `predecessor.coverage`
 when live publishes no sitemap (the capture saved none) and every page the crawl found is
-built or on a decision row. A missing root icon counts as live's when the capture's probe
+built or on a decision row. Also `output.og-image` for an image under the media prefix when
+`docs/media-plan.json` keeps media off the repo (`store`, `live-temporary`) and the rewrite for
+that prefix is configured; and `output.noindex-utility-pages` for a demo, preview or test page
+live indexed too, with a decision row naming it. pre-launch lists at most 20 rows per check
+and keeps no fuller list: a longer check is accepted only when a decision row names its id and
+its count equals live's (titles, descriptions, h1, utility pages). A missing root icon counts as live's when the capture's probe
 (`capture/meta.json` `icons`) saw live answer 404; never invent one to pass. Everything
 else blocks and is fixed on the branch, as the `pre-launch` skill's triage says. Keep its
 accepted lines for the PR. Never pass `--confirm`: the human checklist ids (`forms`,
