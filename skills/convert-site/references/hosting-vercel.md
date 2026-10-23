@@ -106,11 +106,12 @@ points the person to the project's bulk redirects.
 no `blob store add`; when there is no token yet, the person makes both (a needs-you item):
 
     npx vercel blob create-store <slug>-media --access public --scope <scope>
-    npx vercel storage connect <store id> --project <slug> -e development --auth token --add-rw-token --scope <scope>
+    npx vercel storage connect <store id> --project <slug> -e development --auth token --add-rw-token --scope <scope> --yes
 
 `create-store` prints the store id (`store_...`) and gives no token; `storage connect` with
 `--auth token --add-rw-token` adds `BLOB_READ_WRITE_TOKEN` to the project's Development
-environment (the default, `--auth oidc`, writes no static token). Run `create-store` outside a
+environment (the default, `--auth oidc`, writes no static token); `--yes` answers its
+confirmation prompt, which otherwise waits forever in a non-interactive shell. Run `create-store` outside a
 linked directory, or it connects the store to that project for every environment. The token's
 value does not start with `vercel_blob_rw_` (what `vercel env ls` shows begins `eyJ`), so never
 rely on a prefix to spot or redact it. It never goes in chat or in a file in the repo.
@@ -122,7 +123,9 @@ script outside the repository (for example `$TMPDIR/upload-media.sh`) holding th
     node $KIT/skills/convert-site/scripts/media-upload.mjs --store blob --dir .conversion/media-cache --manifest media-manifest.json --prefix /wp-content/uploads/ --media capture/media.json
 
 then, from `SITE`, `npx vercel env run --environment development -- $TMPDIR/upload-media.sh`.
-When the token is already in your shell's environment, run the command directly. Rerun until
+When the token is already in your shell's environment, run the command directly. A large
+library (thousands of files) goes faster with `--concurrency 8` (default 1, at most 32); the
+store's 429 answers are retried. Rerun until
 it exits 0 (it resumes: a rerun with the same manifest skips what is uploaded). Commit
 `media-manifest.json`. `.conversion/media-cache/` is the capture's download, on the machine that
 ran the capture; it stays out of git. Then write the rewrite, with the store origin taken from

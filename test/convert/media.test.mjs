@@ -240,8 +240,10 @@ function makeCache(name) {
 }
 
 // A stand-in for the object store: records PUTs, serves HEADs of what it stored.
-async function startStoreStub({ lie = false, failPuts = 0, failHeads = 0 } = {}) {
+// holdMs delays each PUT answer, so overlapping uploads show in maxInFlight.
+async function startStoreStub({ lie = false, failPuts = 0, failHeads = 0, holdMs = 0 } = {}) {
   const puts = [];
+  const flight = { now: 0, max: 0 };
   const heads = [];
   const attempts = { PUT: 0, HEAD: 0 };
   const stored = new Map();
@@ -271,8 +273,13 @@ async function startStoreStub({ lie = false, failPuts = 0, failHeads = 0 } = {})
         const body = Buffer.concat(chunks);
         puts.push({ path, url: req.url, headers: req.headers, bytes: body.length });
         stored.set(path, body);
-        res.writeHead(200, { 'content-type': 'application/json', etag: `"etag-${body.length}"` });
-        res.end(JSON.stringify({ url: `${origin}/public${path}`, pathname: path.slice(1) }));
+        flight.now += 1;
+        flight.max = Math.max(flight.max, flight.now);
+        setTimeout(() => {
+          flight.now -= 1;
+          res.writeHead(200, { 'content-type': 'application/json', etag: `"etag-${body.length}"` });
+          res.end(JSON.stringify({ url: `${origin}/public${path}`, pathname: path.slice(1) }));
+        }, holdMs);
         return;
       }
       if (req.method === 'HEAD') {
@@ -298,6 +305,7 @@ async function startStoreStub({ lie = false, failPuts = 0, failHeads = 0 } = {})
     puts,
     heads,
     attempts,
+    flight,
     close: () =>
       new Promise((r) => {
         server.closeAllConnections();
@@ -349,6 +357,29 @@ test('blob upload against a stub: 3 files, verified sizes, manifest written, sec
     assert.equal(stub.puts.length, 3, 'second run uploads nothing');
     assert.match(second.stdout, /uploaded 0/);
     assert.match(second.stdout, /skipped 3/);
+  } finally {
+    await stub.close();
+  }
+});
+
+test('--concurrency uploads files at once; blob HEADs ask for identity so content-length is the stored size', async () => {
+  const stub = await startStoreStub({ holdMs: 150 });
+  try {
+    const dir = makeCache('cache-concurrent');
+    const manifest = join(work, 'manifest-concurrent.json');
+    const args = ['--store', 'blob', '--dir', dir, '--manifest', manifest, '--prefix', '/wp-content/uploads/', '--endpoint', stub.origin];
+    const res = await run(UPLOAD, [...args, '--concurrency', '3'], { ...NO_CREDS, BLOB_READ_WRITE_TOKEN: 'tok' });
+    assert.equal(res.code, 0, res.stderr);
+    assert.equal(stub.puts.length, 3);
+    assert.equal(stub.flight.max, 3, 'the three uploads overlapped');
+    assert.equal(JSON.parse(readFileSync(manifest, 'utf8')).length, 3);
+    assert.ok(stub.heads.length === 3 && stub.heads.every((h) => h.headers['accept-encoding'] === 'identity'));
+    for (const bad of ['0', '33', 'two']) {
+      const refused = await run(UPLOAD, [...args, '--concurrency', bad], NO_CREDS);
+      assert.equal(refused.code, 2, `--concurrency ${bad}`);
+      assert.match(refused.stderr, /--concurrency needs a whole number from 1 to 32/);
+    }
+    assert.match((await run(UPLOAD, ['--help'])).stdout, /--concurrency/);
   } finally {
     await stub.close();
   }

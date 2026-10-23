@@ -73,7 +73,8 @@ export function createBlobStore({ env = process.env, endpoint = BLOB_ENDPOINT } 
       return { url: json.url, etag: json.etag ?? res.headers.get('etag') ?? null };
     },
     async head(url) {
-      const res = await fetchWithRetry(url, { method: 'HEAD' });
+      // identity: a compressed answer (SVG, JSON) carries no content-length to compare.
+      const res = await fetchWithRetry(url, { method: 'HEAD', headers: { 'accept-encoding': 'identity' } });
       if (!res.ok) throw new Error(`HEAD ${url} answered ${res.status}`);
       return { bytes: Number(res.headers.get('content-length')), etag: res.headers.get('etag') };
     },

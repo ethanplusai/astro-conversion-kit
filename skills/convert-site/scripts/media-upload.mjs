@@ -12,7 +12,7 @@ import { createR2Store, R2_ENV } from './lib/stores/r2.mjs';
 
 const HELP = `Usage: node media-upload.mjs --store blob|r2 --dir <cache> --manifest media-manifest.json
                             --prefix /wp-content/uploads/ [--media capture/media.json]
-                            [--endpoint <url>]
+                            [--endpoint <url>] [--concurrency <n>]
 
 Uploads every file under <cache><prefix> (the cache mirrors site paths, so
 <cache>/wp-content/uploads/2026/01/a.jpg is the site path
@@ -25,6 +25,8 @@ url is the object's public address on blob, and on r2 the site path the R2 media
 function serves (the bucket itself stays private).
 With --media, each file's content type comes from the captured media list;
 otherwise it is looked up from the file extension.
+--concurrency uploads that many files at once (default 1, at most 32); the store's
+429 answers are retried as above.
 
 Credentials come from the environment:
   blob: BLOB_READ_WRITE_TOKEN
@@ -131,6 +133,8 @@ async function main() {
     return;
   }
   for (const name of ['store', 'dir', 'manifest', 'prefix']) if (!opts[name]) usage(`--${name} is required (see --help)`);
+  const concurrency = opts.concurrency === undefined ? 1 : Number(opts.concurrency);
+  if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 32) usage('--concurrency needs a whole number from 1 to 32');
   const kind = STORES[opts.store];
   if (!kind) usage(`--store must be blob or r2, got "${opts.store}"`);
 
@@ -159,12 +163,13 @@ async function main() {
   let uploaded = 0;
   let skipped = 0;
   let failed = 0;
-  for (const file of walk(root)) {
+  // One file: skipped when the manifest already holds it at this size.
+  const uploadOne = async (file) => {
     const sitePath = `/${relative(opts.dir, file).split(sep).join('/')}`;
     const size = statSync(file).size;
     if (done.get(sitePath)?.bytes === size) {
       skipped += 1;
-      continue;
+      return;
     }
     try {
       const body = readFileSync(file);
@@ -181,7 +186,14 @@ async function main() {
       failed += 1;
       console.error(`failed ${sitePath}: ${err.message}`);
     }
-  }
+  };
+
+  const files = walk(root);
+  let next = 0;
+  const worker = async () => {
+    while (next < files.length) await uploadOne(files[next++]);
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, files.length) }, worker));
   save();
   console.log(`media-upload (${opts.store}): uploaded ${uploaded}, skipped ${skipped}, failed ${failed}; manifest ${opts.manifest}`);
   if (failed) process.exit(1);
