@@ -1,7 +1,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { startFixture } from '../fixture/serve.mjs';
@@ -121,4 +121,18 @@ test('appends to existing records and never duplicates one', async () => {
 test('a missing baseline is a usage error', async () => {
   const result = await run(SCRIPT, ['--baseline', join(root, 'nope'), '--out', join(root, 'x.json')]);
   assert.equal(result.code, 2);
+});
+
+test('a link under an excluded prefix gets no record: the links gate does not check it', async () => {
+  const dir = join(root, 'baseline-excluded');
+  cpSync(baseline, dir, { recursive: true });
+  const meta = JSON.parse(readFileSync(join(dir, 'meta.json'), 'utf8'));
+  writeFileSync(join(dir, 'meta.json'), JSON.stringify({ ...meta, excluded: ['/deleted-post', '/wp-json/'] }));
+  const out = join(root, 'excluded.json');
+  const result = await run(SCRIPT, ['--baseline', dir, '--capture', capture, '--out', out, '--redirects', join(root, 'redirects.csv')]);
+  assert.equal(result.code, 0, result.stderr);
+  const records = JSON.parse(readFileSync(out, 'utf8'));
+  assert.ok(!records.some((r) => r.reason === 'broken on live'), '/deleted-post written without its slash still covers /deleted-post/');
+  assert.ok(!records.some((r) => r.to.includes('/wp-json/')));
+  assert.ok(records.some((r) => r.to.includes('xmlrpc.php')));
 });

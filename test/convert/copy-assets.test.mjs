@@ -135,3 +135,41 @@ test('media on disk without a media plan is a usage error', async () => {
   assert.equal(result.code, 2);
   assert.match(result.stderr, /media plan/);
 });
+
+test('a file the capture names outside the capture folder is refused with exit 1', async () => {
+  const dir = site('traversal', { mode: 'store', prefix: '/wp-content/uploads/' });
+  writeFileSync(join(dir, '.env'), 'SECRET=1\n');
+  const file = join(dir, 'capture', 'js', 'manifest.json');
+  const manifest = JSON.parse(readFileSync(file, 'utf8'));
+  manifest.push({ file: '../../.env', src: `${origin}/wp-content/themes/fixture/js/env.js`, kind: 'script', pages: ['/'] });
+  writeFileSync(file, JSON.stringify(manifest));
+  const result = await copy(dir);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /refused: script .*env\.js: .*\.env: outside /);
+  assert.ok(!existsSync(join(dir, 'public', 'wp-content/themes/fixture/js/env.js')), 'nothing written for it');
+  assert.ok(existsSync(join(dir, 'public', 'wp-content/themes/fixture/js/view.js')), 'the rest is copied');
+});
+
+test('nothing under an excluded prefix is copied, and the media prefix counts without its trailing slash', async () => {
+  const dir = site('excluded', { mode: 'store', prefix: '/wp-content/uploads' });
+  const metaFile = join(dir, 'capture', 'meta.json');
+  const meta = JSON.parse(readFileSync(metaFile, 'utf8'));
+  writeFileSync(metaFile, JSON.stringify({ ...meta, excluded: ['/wp-content/themes/fixture/fonts/', '/old-site'] }));
+  const cache = join(dir, '.conversion', 'media-cache');
+  mkdirSync(join(cache, 'old-site', 'files'), { recursive: true });
+  writeFileSync(join(cache, 'old-site', 'files', 'a.pdf'), 'pdf');
+  mkdirSync(join(cache, 'wp-content', 'uploads-old'), { recursive: true });
+  writeFileSync(join(cache, 'wp-content', 'uploads-old', 'b.jpg'), 'jpg');
+  const result = await copy(dir);
+  assert.equal(result.code, 0, result.stderr);
+  const pub = join(dir, 'public');
+  assert.deepEqual(files(join(pub, 'wp-content', 'themes', 'fixture', 'fonts')), [], 'excluded fonts');
+  assert.ok(!existsSync(join(pub, 'old-site')), 'an excluded media folder');
+  assert.match(result.stdout, /excluded: \d+ \(under a prefix the capture left out: \/wp-content\/themes\/fixture\/fonts\/, \/old-site\)/);
+  assert.deepEqual(files(join(pub, 'wp-content', 'uploads')), [], 'the prefix written without its slash still covers uploads/');
+  assert.equal(readFileSync(join(pub, 'wp-content', 'uploads-old', 'b.jpg'), 'utf8'), 'jpg', 'but not a sibling folder that starts the same');
+});
+
+test('convert-site carries a byte-identical copy of the gates\' excluded.mjs', () => {
+  assert.ok(readFileSync(join(SKILLS, 'convert-site', 'scripts', 'lib', 'excluded.mjs')).equals(readFileSync(join(SKILLS, 'parity-gates', 'scripts', 'lib', 'excluded.mjs'))));
+});

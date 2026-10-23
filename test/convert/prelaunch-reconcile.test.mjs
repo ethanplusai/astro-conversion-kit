@@ -466,11 +466,16 @@ test('output.og-image: a missing image under the media prefix is accepted when t
   const media = JSON.parse(readFileSync(join(baseline, 'media.json'), 'utf8'));
   const image = media.find((m) => m.path.startsWith('/wp-content/uploads/') && m.path.endsWith('.jpg')).path;
   const row = (path) => failing('output.og-image', '1 og:image does not resolve', [`https://www.example.com${path} does not exist in the build (used by about/index.html)`], 'url');
-  const site = (name, { mode, rewrite = true }) => {
+  const WHOLE = { source: '/wp-content/uploads/:path*', destination: 'https://www.example.com/wp-content/uploads/:path*' };
+  const site = (name, { mode, rewrite = true, rewrites = rewrite ? [WHOLE] : [], redirects = null }) => {
     const dir = join(root, name);
     mkdirSync(join(dir, 'docs'), { recursive: true });
     writeFileSync(join(dir, 'docs', 'media-plan.json'), JSON.stringify({ mode, prefix: '/wp-content/uploads/' }));
-    writeFileSync(join(dir, 'vercel.json'), JSON.stringify({ rewrites: rewrite ? [{ source: '/wp-content/uploads/:path*', destination: 'https://www.example.com/wp-content/uploads/:path*' }] : [] }));
+    writeFileSync(join(dir, 'vercel.json'), JSON.stringify({ rewrites }));
+    if (redirects) {
+      mkdirSync(join(dir, 'public'), { recursive: true });
+      writeFileSync(join(dir, 'public', '_redirects'), redirects);
+    }
     return ['--dir', dir];
   };
   const ok = await reconcile([row(image)], { planFile: bare, extra: site('site-live-temporary', { mode: 'live-temporary' }) });
@@ -486,6 +491,16 @@ test('output.og-image: a missing image under the media prefix is accepted when t
   assert.equal(noRewrite.code, 1);
   const unknown = await reconcile([row('/wp-content/uploads/2026/01/not-captured.jpg')], { planFile: bare, extra: site('site-unknown', { mode: 'store' }) });
   assert.equal(unknown.code, 1, 'a path the baseline media does not list');
+  // A rewrite that covers one file under the prefix, or sends the prefix to a path on this site,
+  // serves nothing else under it.
+  const oneFile = await reconcile([row(image)], { planFile: bare, extra: site('site-one-file', { mode: 'store', rewrites: [{ source: image, destination: `https://store.example.com${image}` }] }) });
+  assert.equal(oneFile.code, 1, 'a one-file rewrite does not cover the prefix');
+  const local = await reconcile([row(image)], { planFile: bare, extra: site('site-local', { mode: 'store', rewrites: [{ source: '/wp-content/uploads/:path*', destination: '/media/:path*' }] }) });
+  assert.equal(local.code, 1, 'a rewrite to a path on the same site');
+  const pages = await reconcile([row(image)], { planFile: bare, extra: site('site-redirects', { mode: 'live-temporary', rewrite: false, redirects: '/wp-content/uploads/* https://www.example.com/wp-content/uploads/:splat 302\n' }) });
+  assert.equal(pages.code, 0, `a _redirects splat to another origin covers it\n${pages.stdout}`);
+  const pagesLocal = await reconcile([row(image)], { planFile: bare, extra: site('site-redirects-local', { mode: 'live-temporary', rewrite: false, redirects: `/wp-content/uploads/* /media/:splat 200\n${image} https://www.example.com${image} 302\n` }) });
+  assert.equal(pagesLocal.code, 1, 'a local splat or a one-file line does not');
 });
 
 test('output.noindex-utility-pages: accepted when live indexed the same page and a decision names it', async () => {

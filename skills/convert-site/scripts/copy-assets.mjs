@@ -9,6 +9,7 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { assertNodeVersion } from './lib/node-version.mjs';
+import { excludedBy } from './lib/excluded.mjs';
 
 const HELP = `Usage: node copy-assets.mjs --capture capture --site . [--media-cache <dir>] [--plan <file>]
 
@@ -36,8 +37,11 @@ Prints a count per kind. Running it again rewrites the same files.
                        else <site>/.conversion/media-plan.json); needed when media was downloaded
   --help               show this help
 
-Exit codes: 0 copied, 1 a file the capture lists is missing (the others are still copied),
-2 usage error or unreadable input.`;
+Nothing under a prefix the capture excluded (meta.json excluded) is copied. A file the capture
+names outside the capture folder (a manifest "file" such as ../../.env) is refused.
+
+Exit codes: 0 copied, 1 a file the capture lists is missing or refused (the others are still
+copied), 2 usage error or unreadable input.`;
 
 class UsageError extends Error {}
 
@@ -93,12 +97,25 @@ export function copyAssets({ capture, site, mediaCache, plan: planFile }) {
   const meta = readJson(join(capture, 'meta.json'), {});
   const siteOrigin = meta.canonicalOrigin ?? meta.origin ?? null;
   const siteHost = siteOrigin ? bareHost(new URL(siteOrigin).host) : null;
-  const counts = { scripts: 0, concat: 0, fonts: 0, rootIcons: 0, manifest: 0, media: 0 };
+  const counts = { scripts: 0, concat: 0, fonts: 0, rootIcons: 0, manifest: 0, media: 0, excluded: 0 };
   const missing = [];
   const skipped = [];
+  const refused = [];
+  const excluded = meta.excluded ?? [];
 
-  const put = (source, livePath, what) => {
-    if (!existsSync(source)) {
+  // Copies source (which must lie inside root) to public/ at livePath, unless livePath is under a
+  // prefix the capture excluded (an old download may still hold such files).
+  const put = (source, livePath, what, root = capture, sitePath = livePath) => {
+    if (excludedBy(excluded, sitePath)) {
+      counts.excluded += 1;
+      return false;
+    }
+    const full = resolve(source);
+    if (!full.startsWith(resolve(root) + sep)) {
+      refused.push(`${what} ${source}: outside ${root}`);
+      return false;
+    }
+    if (!existsSync(full)) {
       missing.push(`${what} ${relative(process.cwd(), source) || source}`);
       return false;
     }
@@ -120,7 +137,7 @@ export function copyAssets({ capture, site, mediaCache, plan: planFile }) {
     const source = join(capture, 'js', entry.file);
     if (isConcat(url)) {
       const key = concatKey(url);
-      if (put(source, concatPath(key), `script ${entry.src}:`)) {
+      if (put(source, concatPath(key), `script ${entry.src}:`, capture, url.pathname)) {
         concat[key] = concatPath(key);
         counts.scripts += 1;
         counts.concat += 1;
@@ -154,14 +171,14 @@ export function copyAssets({ capture, site, mediaCache, plan: planFile }) {
   if (existsSync(cache)) {
     plan = mediaPlan(site, planFile);
     if (!plan) throw new UsageError(`media was downloaded to ${cache} but no media plan was found (docs/media-plan.json or .conversion/media-plan.json; pass --plan)`);
-    const prefix = plan.mode === 'repo' ? null : decode(plan.prefix);
+    const prefix = plan.mode === 'repo' ? null : `/${decode(plan.prefix).replace(/^\/+|\/+$/g, '')}/`;
     for (const file of walk(cache)) {
       const livePath = `/${relative(cache, file).split(sep).join('/')}`;
-      if (prefix && livePath.startsWith(prefix)) continue;
-      if (put(file, livePath, 'media')) counts.media += 1;
+      if (prefix && excludedBy([prefix], livePath)) continue;
+      if (put(file, livePath, 'media', cache)) counts.media += 1;
     }
   }
-  return { counts, missing, skipped, plan };
+  return { counts, missing, skipped, refused, plan, excluded };
 }
 
 function options(argv) {
@@ -203,7 +220,7 @@ function main() {
     console.error('Run with --help for usage.');
     process.exit(2);
   }
-  const { counts, missing, skipped, plan } = result;
+  const { counts, missing, skipped, refused, plan } = result;
   console.log(`scripts: ${counts.scripts} (${counts.concat} concatenated)`);
   console.log(`fonts: ${counts.fonts}`);
   console.log(`root icons: ${counts.rootIcons}`);
@@ -211,9 +228,11 @@ function main() {
   if (!plan) console.log('media: 0 (no media download)');
   else if (plan.mode === 'repo') console.log(`media (repo mode, every file): ${counts.media}`);
   else console.log(`media outside ${plan.prefix}: ${counts.media}`);
+  if (counts.excluded) console.log(`excluded: ${counts.excluded} (under a prefix the capture left out: ${(result.excluded ?? []).join(', ')})`);
   for (const line of skipped) console.log(`skipped ${line}`);
   for (const line of missing) console.error(`missing: ${line}`);
-  process.exitCode = missing.length ? 1 : 0;
+  for (const line of refused) console.error(`refused: ${line}`);
+  process.exitCode = missing.length || refused.length ? 1 : 0;
 }
 
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) main();

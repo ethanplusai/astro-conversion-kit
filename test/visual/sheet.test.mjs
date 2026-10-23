@@ -178,6 +178,32 @@ test('200 page pairs stream to small files: no page holds more than its route, n
   }
 });
 
+test('a rerun removes the route pages it wrote that are no longer in the set, and nothing else', async () => {
+  const dir = join(TMP, 'rerun');
+  const out = join(dir, 'review.html');
+  const args = (live, next, diffFile) => ['--live', live, '--new', next, '--diff', diffFile, '--out', out];
+  const first = await run(args(join(TMP, 'live'), join(TMP, 'new'), join(TMP, 'diff', 'diff.json')));
+  assert.equal(first.code, 0, first.stderr);
+  const pagesDir = join(dir, 'review-pages');
+  assert.ok(existsSync(join(pagesDir, 'about.html')));
+  writeFileSync(join(pagesDir, 'notes.html'), 'mine');
+  // The same shots without the about route.
+  for (const side of ['live', 'new']) {
+    cpSync(join(TMP, side), join(dir, side), { recursive: true });
+    const file = join(dir, side, 'manifest.json');
+    writeFileSync(file, JSON.stringify(JSON.parse(readFileSync(file, 'utf8')).filter((e) => e.route !== 'about')));
+  }
+  cpSync(join(TMP, 'diff'), join(dir, 'diff'), { recursive: true });
+  writeFileSync(join(dir, 'diff', 'diff.json'), JSON.stringify(diff.filter((d) => d.route !== 'about')));
+  const second = await run(args(join(dir, 'live'), join(dir, 'new'), join(dir, 'diff', 'diff.json')));
+  assert.equal(second.code, 0, second.stderr);
+  assert.match(second.stdout, /removed 1 route page no longer in the set/);
+  assert.ok(!existsSync(join(pagesDir, 'about.html')), 'the stale route page is gone');
+  assert.ok(existsSync(join(pagesDir, 'home.html')));
+  assert.equal(readFileSync(join(pagesDir, 'notes.html'), 'utf8'), 'mine', 'a file the sheet never wrote is kept');
+  assert.deepEqual(pagesOf(out).pages.map((p) => p.href), ['review-pages/home.html']);
+});
+
 test('without --styles the sheet still renders, failing diff rows only', async () => {
   const out = join(TMP, 'plain.html');
   const { code } = await run([

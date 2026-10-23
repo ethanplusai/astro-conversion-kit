@@ -47,9 +47,12 @@ Narrow rules that need no decision:
                                   site's sitemap the default build keeps, as live had it)
   output.og-image                 a row "<image> does not exist in the build" whose path the
                                   baseline media lists, under the media prefix of a media plan in
-                                  mode store or live-temporary, with a rewrite for that prefix in
-                                  <dir>/vercel.json, a _redirects line (<dist> or <dir>/public) or
-                                  a Pages Function under <dir>/functions/: the rewrite serves it
+                                  mode store or live-temporary, with the whole prefix sent to
+                                  another origin: a <dir>/vercel.json rewrite whose source is the
+                                  prefix plus a parameter (/:path*) and whose destination is an
+                                  absolute URL, a _redirects line (<dist> or <dir>/public)
+                                  "<prefix>* <absolute URL> 200|302", or a Pages Function
+                                  under <dir>/functions/: the rewrite serves it
 output.noindex-utility-pages rows are pages: accepted when live had the same page indexable
 (no noindex in baseline/seo.json) and a decision names the check, or the page and "noindex",
 "robots" or "indexable".
@@ -400,8 +403,15 @@ function rewriteServes(env, path) {
     vercel = [];
   }
   const redirects = [join(env.dist, '_redirects'), join(env.dir, 'public', '_redirects')].map(read).filter(Boolean).join('\n');
-  const covered = vercel.some((r) => typeof r?.source === 'string' && r.source.startsWith(prefix))
-    || redirects.split('\n').some((line) => line.trim().startsWith(`${prefix}*`))
+  // The whole prefix (a parameter or splat right after it), sent to another origin: the store or
+  // live. A one-file rewrite under the prefix, or one to a path on this site, serves nothing else.
+  const offOrigin = (destination) => /^https?:\/\//i.test(String(destination ?? '').trim());
+  const wholePrefix = (source) => typeof source === 'string' && source.startsWith(prefix) && /^(?::[A-Za-z_]\w*|\*)/.test(source.slice(prefix.length));
+  const covered = vercel.some((r) => wholePrefix(r?.source) && offOrigin(r.destination))
+    || redirects.split('\n').some((line) => {
+      const [from, to, status] = line.trim().split(/\s+/);
+      return from === `${prefix}*` && offOrigin(to) && ['200', '302'].includes(status);
+    })
     || existsSync(join(env.dir, 'functions', ...prefix.split('/').filter(Boolean), '[[path]].js'));
   return covered ? `media plan (${plan.mode})` : null;
 }

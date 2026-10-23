@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { assertNodeVersion } from './lib/node-version.mjs';
 import { linkRecords } from './lib/link-records.mjs';
+import { excludedBy } from './lib/excluded.mjs';
 
 export const API_REASON = 'WordPress API link kept as captured';
 export const BROKEN_REASON = 'broken on live';
@@ -80,7 +81,7 @@ export function linkExceptions({ baseline, capture, redirects, existing, date })
   const origin = originOf(meta.canonicalOrigin ?? '') ?? originOf(meta.origin ?? '') ?? 'http://site.invalid';
   const internalOrigins = new Set([originOf(meta.origin ?? ''), originOf(meta.canonicalOrigin ?? '')].filter(Boolean));
   const excluded = meta.excluded ?? [];
-  const internal = (url) => (internalOrigins.has(url.origin) || url.origin === origin) && !excluded.some((p) => url.pathname.startsWith(p));
+  const internal = (url) => (internalOrigins.has(url.origin) || url.origin === origin) && !excludedBy(excluded, url.pathname);
   const brokenPaths = new Set(routes.filter((r) => r.status === 404 || r.status === 410).map((r) => r.path));
   const sources = redirectSources(redirects);
   const resolves = (path) => sources.has(path) || sources.has(path.replace(/\/$/, '')) || sources.has(`${path}/`);

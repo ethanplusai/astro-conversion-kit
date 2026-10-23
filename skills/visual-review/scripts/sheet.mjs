@@ -2,7 +2,7 @@
 // Contact sheet: an index page plus one HTML page per route, with live, new and diff screenshots
 // side by side per width and the failing style rows. Images are linked by path, never inlined,
 // and each route page is written as soon as it is built, so a site of any size fits.
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -15,7 +15,9 @@ fail and differing-pixel percent, and links to one page per route in <out name>-
 (review/index.html -> review/index-pages/<route>.html). A route page has a row per width with
 the live, new and diff screenshots side by side, the percent, pass or fail, both heights, and
 the failing style rows beneath. Images are referenced by relative path, not embedded: keep the
-sheet beside the screenshot folders (or copy them with it) to open it elsewhere.
+sheet beside the screenshot folders (or copy them with it) to open it elsewhere. A route page an
+earlier run wrote (listed in <out name>-pages/.sheet.json) whose route is gone is removed; no
+other file there is touched.
 
   --live, --new  screenshot folders holding manifest.json and <route>/<width>.png
   --diff         diff.json; diff images are read from the folder it sits in
@@ -103,6 +105,9 @@ ${body}
 </body>
 </html>
 `;
+
+// The route pages the last run wrote, so the next run removes only its own stale pages.
+const SHEET_LIST = '.sheet.json';
 
 // A file name for each route, unique within the sheet.
 function pageNames(routes) {
@@ -193,7 +198,20 @@ ${rows.join('\n')}
 <table><thead><tr><th>Route</th><th>Failing</th><th>Widths</th></tr></thead><tbody>
 ${indexRows.join('\n')}
 </tbody></table>`));
-  return { failing, routes: routes.length, pagesDir };
+  // Route pages an earlier run wrote (listed in its .sheet.json) that this set no longer has.
+  const listFile = join(pagesDir, SHEET_LIST);
+  const written = new Set(names.values());
+  let earlier = [];
+  try {
+    earlier = existsSync(listFile) ? JSON.parse(readFileSync(listFile, 'utf8')) : [];
+  } catch {
+    earlier = [];
+  }
+  const removed = (Array.isArray(earlier) ? earlier : [])
+    .filter((name) => typeof name === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]*\.html$/.test(name) && !written.has(name));
+  for (const name of removed) rmSync(join(pagesDir, name), { force: true });
+  writeFileSync(listFile, `${JSON.stringify([...written].sort(), null, 2)}\n`);
+  return { failing, routes: routes.length, pagesDir, removed: removed.length };
 }
 
 function options(argv) {
@@ -234,8 +252,8 @@ export function main(argv = process.argv.slice(2)) {
       return 0;
     }
     mkdirSync(dirname(opts.out), { recursive: true });
-    const { failing, routes, pagesDir } = writeSheet(opts);
-    console.log(`Wrote ${opts.out} and ${routes} route pages in ${pagesDir} (${failing} failing rows)`);
+    const { failing, routes, pagesDir, removed } = writeSheet(opts);
+    console.log(`Wrote ${opts.out} and ${routes} route pages in ${pagesDir} (${failing} failing rows)${removed ? `; removed ${removed} route page${removed === 1 ? '' : 's'} no longer in the set` : ''}`);
     return 0;
   } catch (err) {
     if (!(err instanceof UsageError)) throw err;
