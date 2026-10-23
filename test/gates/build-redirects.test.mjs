@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { parseRedirectsFile, resolveCloudflare } from '../../skills/parity-gates/scripts/lib/cloudflare-resolver.mjs';
 import { resolveVercel } from '../../skills/parity-gates/scripts/lib/vercel-resolver.mjs';
+import { SLASH_RULES } from '../../skills/parity-gates/scripts/build-redirects.mjs';
 
 const exec = promisify(execFile);
 const SCRIPT = fileURLToPath(new URL('../../skills/parity-gates/scripts/build-redirects.mjs', import.meta.url));
@@ -226,6 +227,13 @@ test('vercel: every file extension in dist/ (else public/) joins the slash rules
   assert.match(fromDist.stdout, /2 extension\(s\) found in dist/);
   assert.match(fromDist.stdout, /trailing slash always/, 'the mode is read back from rules that hold found extensions');
   assert.deepEqual(resolveVercel('/files/sheet.zzk', { config: fromDist.config, dist: join(site, 'dist') }).hops, []);
+});
+
+test('vercel: a .php path (admin-ajax.php) is a file, never given a trailing slash', () => {
+  const config = { redirects: SLASH_RULES.always };
+  const dist = mkdtempSync(join(root, 'php-'));
+  assert.deepEqual(resolveVercel('/wp-admin/admin-ajax.php', { config, dist }).hops, []);
+  assert.equal(resolveVercel('/wp-admin/admin-ajax.php/', { config, dist }).hops[0]?.to, '/wp-admin/admin-ajax.php');
 });
 
 test('usage errors exit 2; --help exits 0 and notes static-file precedence', async () => {

@@ -89,6 +89,8 @@ export const FILE_EXTENSIONS = [
   // documents, media and archives a CMS upload folder routinely holds
   'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'csv', 'rtf', 'odt', 'ods', 'odp', 'mov', 'm4a', 'm4v', 'wav', 'ogg',
   'ogv', 'oga', 'tif', 'tiff', 'bmp', 'heic', 'eps', 'ai', 'psd', 'ics', 'vcf', 'epub', 'gz', 'tgz', 'rar', 'kml', 'kmz',
+  // server scripts a WordPress site answers at (admin-ajax.php, served from captured answers)
+  'php',
 ];
 
 // "jpg" -> "[Jj][Pp][Gg]": the extension in any letter case.
