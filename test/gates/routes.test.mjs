@@ -6,6 +6,10 @@ import { join } from 'node:path';
 import { buildFixtureBaseline } from './fixtures/baseline.mjs';
 import { makeDist } from './fixtures/make-dist.mjs';
 import { runGate } from './fixtures/run-gate.mjs';
+// css-prune names the file; the gate must accept the same name.
+import { variantPath } from '../../skills/convert-site/scripts/css-prune.mjs';
+
+const readJson = (dir, file) => JSON.parse(readFileSync(join(dir, file), 'utf8'));
 
 let root;
 let baseline;
@@ -82,6 +86,17 @@ test("the capture's same-origin stylesheets (baseline/css.json) may be built at 
   assert.equal(failed.code, 1);
   assert.match(failed.stdout, /\/wp-content\/themes\/fixture\/other\.css extra/);
   assert.doesNotMatch(failed.stdout, /style\.css/);
+});
+
+test("a captured sheet served at css-prune's query-named path (a second sheet with the same pathname) is not an extra", async () => {
+  const sheet = readJson(baseline, 'css.json').find((s) => new URL(s.href).search);
+  const { pathname, search } = new URL(sheet.href);
+  const dist = makeDist(join(root, 'dist-theme-css-variant'));
+  const file = join(dist, ...variantPath(pathname, search).split('/').filter(Boolean));
+  mkdirSync(join(file, '..'), { recursive: true });
+  writeFileSync(file, 'x');
+  const passed = await routes(dist);
+  assert.equal(passed.code, 0, passed.stdout + passed.stderr);
 });
 
 test("sitemaps at the live site's root names (sitemap_index.xml, page-sitemap.xml) are not extras", async () => {

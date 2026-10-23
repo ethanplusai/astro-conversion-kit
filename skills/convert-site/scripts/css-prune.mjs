@@ -29,6 +29,13 @@ inventory.json and the pages/ snapshots.
     its own, with the coverage of its own href only (identical sheets under two
     paths, as a multisite has, never share coverage), and written to
     <--public>/<its live path>; the query string is dropped from the file name.
+    One pathname under several queries with the same bytes is one file pruned
+    with all their coverages; with other bytes the later one is written to the
+    path with its query before the extension (style.css?ver=2 -> style.ver-2.css)
+    and its pages link that. The site's host with or without www., on http or
+    https, counts as the site. A captured sheet only an @import reaches, whose
+    @import stays in the output (an unparsable parent, or an unparsable child
+    kept as an @import), is written at its live path too.
   - Every distinct <style> block in a page's <head> is pruned against the
     inline:<n> coverage entries of the same text and written to
     <--inline-out>/inline-<page slug>-<n>.css, named after the first page that
@@ -617,7 +624,22 @@ function pruneOrKeep(text, used, options, { report, name, href }) {
 // imports (each in place, inside the import's conditions, pruned in turn) and then its own rules.
 // Each file is emitted once per emitted set; header collects the @layer statements, @import and
 // @namespace rules that must come first; an inline file's own rules go to inlineKept when given.
-function renderer({ files, manifest, siteOrigin, assigned, widths, report }) {
+// keepImport(target), when given (per-sheet mode), is called for an imported sheet css-tree cannot
+// parse: its @import stays in the output and the caller serves it at its live path, byte for
+// byte. Without it, such a sheet is inlined byte for byte with its url()s made root-relative.
+function renderer({ files, manifest, siteOrigin, assigned, widths, report, keepImport = null }) {
+  const parses = new Map();
+  const parsable = (file) => {
+    if (!parses.has(file.name)) {
+      try {
+        pruneCss(file.text, [], { widths });
+        parses.set(file.name, true);
+      } catch {
+        parses.set(file.name, false);
+      }
+    }
+    return parses.get(file.name);
+  };
   // Why an @import target is not among the captured files.
   const unresolvedReason = (href) => {
     const entry = href && manifest.find((e) => e?.href === href || e?.finalUrl === href);
@@ -658,14 +680,20 @@ function renderer({ files, manifest, siteOrigin, assigned, widths, report }) {
         return;
       }
       if (emitted.has(target.name)) return;
+      if (keepImport && !parsable(target)) {
+        header.imports.push(result.header.imports[i]);
+        keepImport(target);
+        return;
+      }
       // A sheet imported under a media query no tested width satisfies has no evidence against any rule.
       const untested = ref.media !== null && !mediaTested(ref.media, widths);
       if (untested) report.keptBecause.untestedMedia += 1;
       const inner = render(target, { whole: whole || untested, emitted, header, inlineKept });
       if (inner) parts.push(wrapImport(inner, ref));
     });
-    if (result.css && inline && inlineKept) inlineKept.set(file.name, result.css);
-    else if (result.css) parts.push(result.css);
+    const own = result.unparsed && !keepImport ? rewriteRawRefs(file.text, base, siteOrigin) : result.css;
+    if (own && inline && inlineKept) inlineKept.set(file.name, own);
+    else if (own) parts.push(own);
     return parts.join('\n');
   };
   return render;
@@ -682,6 +710,37 @@ function fileForHref(files, href) {
   if (exact) return exact;
   const byPath = sheets.filter((f) => hrefsOf(f).some((h) => pathKey(h, true) === pathKey(href, true)));
   return byPath.length === 1 ? byPath[0] : null;
+}
+
+// Where a sheet captured under a query is served when another sheet with other bytes already
+// has its pathname: the query, made file-name safe, before the extension
+// (/t/style.css?ver=2 -> /t/style.ver-2.css). The routes gate names it the same way.
+export function variantPath(pathname, search) {
+  const tag = search.replace(/^\?/, '').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'variant';
+  const dot = pathname.lastIndexOf('.');
+  return dot > pathname.lastIndexOf('/') ? `${pathname.slice(0, dot)}.${tag}${pathname.slice(dot)}` : `${pathname}.${tag}`;
+}
+
+// The site's own host, with or without www., on either scheme.
+const bareHost = (href) => {
+  try {
+    const url = new URL(href);
+    return /^https?:$/.test(url.protocol) ? url.hostname.replace(/^www\./, '') : null;
+  } catch {
+    return null;
+  }
+};
+
+// The url() and @import references of a sheet css-tree cannot parse, rewritten by text as
+// rewriteRef does (same-origin root-relative), for a sheet inlined away from its own path.
+function rewriteRawRefs(text, base, siteOrigin) {
+  const swap = (whole, quote, ref, wrap) => {
+    const next = rewriteRef(ref, base, siteOrigin);
+    return next === null ? whole : wrap(`${quote}${next}${quote}`);
+  };
+  return text
+    .replace(/url\(\s*(['"]?)([^'"()\s]+)\1\s*\)/gi, (whole, quote, ref) => swap(whole, quote, ref, (v) => `url(${v})`))
+    .replace(/@import\s+(['"])([^'"]+)\1/gi, (whole, quote, ref) => swap(whole, quote, ref, (v) => `@import ${v}`));
 }
 
 // Every captured page's stylesheets ({ record, head, links } in inventory order), read from
@@ -802,19 +861,53 @@ export function prunePerSheet({ css, coverage, widths = DEFAULT_WIDTHS, origin, 
   const loaded = load({ css, coverage, origin });
   const { files, siteOrigin } = loaded;
   const report = { ...emptyReport('per-sheet'), siteCss: null, sheets: [], inline: [], external: [], notCaptured: [], heads: {} };
-  const render = renderer({ ...loaded, widths, report });
+  const toWrite = [];
+  const queued = new Set();
   const media = linkMedia(files, pages);
-  const sameSite = (href) => originOf(href) === siteOrigin;
-  const rootRelative = (href) => {
+  const site = bareHost(siteOrigin);
+  // The site's own host, www or not, on either scheme: served from public/, never from live.
+  const sameSite = (href) => Boolean(site) && bareHost(href) === site;
+
+  // Sheets by pathname: the same bytes under several queries are one file pruned with all their
+  // coverages; other bytes under the same pathname go to variantPath, which their pages link.
+  const own = files.filter((f) => !isInline(f) && f.entry?.href && sameSite(f.entry.href));
+  const served = new Map(); // file name -> { primary, url } (url: the served path, root-relative)
+  for (const file of own) {
+    const { pathname, search } = new URL(file.entry.href);
+    const twin = own.find((f) => served.has(f.name) && new URL(f.entry.href).pathname === pathname && f.text === file.text);
+    if (twin) {
+      const { primary, url } = served.get(twin.name);
+      const [into, from] = [loaded.assigned.get(primary.name), loaded.assigned.get(file.name)];
+      into.ranges.push(...from.ranges);
+      into.stateRanges.push(...from.stateRanges);
+      into.matched ||= from.matched;
+      served.set(file.name, { primary, url });
+      continue;
+    }
+    const taken = [...served.values()].some((s) => s.url === pathname);
+    served.set(file.name, { primary: file, url: taken ? variantPath(pathname, search) : pathname });
+  }
+  const enqueue = (file) => {
+    const primary = file && served.get(file.name)?.primary;
+    if (!primary || queued.has(primary.name)) return;
+    queued.add(primary.name);
+    toWrite.push(primary);
+  };
+  const render = renderer({ ...loaded, widths, report, keepImport: enqueue });
+  // A link's href: same-site sheets at the path they are served at, with live's query.
+  const linkHref = (href) => {
+    const file = fileForHref(files, href);
     const url = new URL(href);
-    return url.pathname + url.search;
+    return (file && served.get(file.name)?.url) ?? url.pathname;
   };
 
-  // Linked sheets, in source order, each pruned with its own coverage only.
+  // Linked sheets in source order, then the sheets only an @import left in the output reaches,
+  // each pruned with its own coverage only.
   const linked = new Set(pages.flatMap(({ links }) => links.map((link) => fileForHref(files, link.href)?.name).filter(Boolean)));
+  for (const file of files) if (linked.has(file.name)) enqueue(file);
   const sheets = [];
-  for (const file of files) {
-    if (!linked.has(file.name) || !sameSite(file.entry.href)) continue;
+  for (let i = 0; i < toWrite.length; i += 1) {
+    const file = toWrite[i];
     const condition = media.get(file.name) ?? null;
     const untested = condition !== null && !mediaTested(condition, widths);
     if (untested) report.keptBecause.untestedMedia += 1;
@@ -822,14 +915,17 @@ export function prunePerSheet({ css, coverage, widths = DEFAULT_WIDTHS, origin, 
     const header = newHeader();
     const body = render(file, { whole: untested, emitted: new Set(), header });
     const keptAsIs = report.unparsed.slice(before.unparsed).some((u) => u.href === file.entry.href);
+    // An unparsable sheet keeps its @imports: the captured sheets they name are served too.
+    if (keptAsIs) {
+      const hrefs = hrefsOf(file);
+      for (const child of files) if (child.entry?.importedBy?.some((h) => hrefs.includes(h))) enqueue(child);
+    }
     const text = keptAsIs ? file.text : `${withHeader(header, [body].filter(Boolean))}\n`;
-    const path = join(publicDir, decodeURIComponent(new URL(file.entry.href).pathname));
+    const path = join(publicDir, decodeURIComponent(served.get(file.name).url));
     sheets.push({ path, css: text });
     report.after += Buffer.byteLength(text);
-    report.sheets.push({
-      href: file.entry.href, file: path, bytesBefore: report.before - before.bytes,
-      bytesAfter: Buffer.byteLength(text), rulesRemoved: report.removedRules - before.rules,
-    });
+    const row = { file: path, bytesBefore: report.before - before.bytes, bytesAfter: Buffer.byteLength(text), rulesRemoved: report.removedRules - before.rules };
+    for (const twin of own.filter((f) => served.get(f.name).primary === file)) report.sheets.push({ href: twin.entry.href, ...row });
   }
 
   // Head <style> blocks: one file per distinct block, named after the first page that has it.
@@ -843,7 +939,7 @@ export function prunePerSheet({ css, coverage, widths = DEFAULT_WIDTHS, origin, 
     for (const item of head) {
       if (item.kind === 'link') {
         const file = fileForHref(files, item.href);
-        const entry = { kind: 'link', href: sameSite(item.href) ? rootRelative(item.href) : item.href, ...(item.media ? { media: item.media } : {}) };
+        const entry = { kind: 'link', href: sameSite(item.href) ? linkHref(item.href) + new URL(item.href).search : item.href, ...(item.media ? { media: item.media } : {}) };
         if (!sameSite(item.href)) {
           if (!report.external.includes(item.href)) report.external.push(item.href);
         } else if (!file) {
