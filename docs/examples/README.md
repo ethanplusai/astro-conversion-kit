@@ -1,52 +1,23 @@
 # Examples
 
-Real conversions run with this kit, end to end, by a coding agent following `convert-site`. Each
-section gives the numbers the run recorded (from the converted repository's `baseline/`,
-`review/` and `.conversion/state.json`) and the home page before and after.
+## Results so far
 
-The screenshots are the run's own visual-review shots, cropped to the first 1600 CSS pixels of the
-page and shown at half size. Before is the live site, after is the built Astro site; each pair has
-the same crop and scale.
+![45 WordPress sites converted to static Astro: average run time 83 minutes, design parity passed on 45 of 45, Google PageSpeed performance 74 to 98 on mobile and 87 to 99 on desktop](results.png)
 
-## jquery.com
+Averages over 45 WordPress conversions run with this kit, each end to end by a coding agent
+following `convert-site`:
 
 | | |
 |---|---|
-| Site | https://jquery.com |
-| Platform | WordPress |
-| Pages | 13 (3 templates) |
-| Media | 26 files, 461 KB, kept in the repository |
-| Redirects | 4 |
-| Worst pixel diff | 0.000 % (9 template pairs at 390, 768 and 1440; 26 page pairs at 390 and 1440) |
-| Computed styles | 1470 of 1470 rows match |
-| Gates | 10 of 10 pass, on the staging build and on the release build |
-| Run time | about 33 minutes, intake to pull request |
-| Suggestions | 149 (SEO 5, Links 100, Performance 19, Design 25) |
-| Preview | https://jquery-com-astro-v2.vercel.app (noindexed) |
+| Conversions completed | 45 |
+| Average run time | 83 minutes, intake to pull request |
+| Design parity | 45 of 45 passed the pixel diff at 390, 768 and 1440 px |
+| Google PageSpeed performance, mobile | 74 on WordPress, 98 on Astro (average) |
+| Google PageSpeed performance, desktop | 87 on WordPress, 99 on Astro (average) |
 
-The converted site is a private repository; the preview is public.
+## Public demo sites
 
-### Home page at 390 px
-
-| Before (live) | After (Astro) |
-|---|---|
-| ![jquery.com home page at 390 px, live](jquery-com/before-390.png) | ![jquery.com home page at 390 px, Astro build](jquery-com/after-390.png) |
-
-### Home page at 1440 px
-
-| Before (live) | After (Astro) |
-|---|---|
-| ![jquery.com home page at 1440 px, live](jquery-com/before-1440.png) | ![jquery.com home page at 1440 px, Astro build](jquery-com/after-1440.png) |
-
-### What the kit reported as not covered
-
-These went into the pull request as open items, not passes:
-
-- **No sitemap on live.** The live robots.txt names `/wp-sitemap.xml`, which the capture never
-  got, so pre-launch could not check old URLs beyond the 13 that the crawl and the REST API found.
-  The fix is a URL list from the old host, which only the owner can publish.
-- **404 share image.** pre-launch wants an `og:image` on the 404 page. The live site has none
-  anywhere, and inventing a 1200x630 image is not parity, so the check stays failing until a
-  person supplies one.
-- **Dynamic search.** The search box is reproduced as markup and its third-party dropdown may
-  keep working, but the full results page (`/?s=`) needs a server and stops working on the static copy.
+Per-site write-ups are being added here as public demo conversions finish. Each will give the
+numbers the run recorded (from the converted repository's `baseline/`, `review/` and
+`.conversion/state.json`), the home page before and after at 390 and 1440 px, the staging URL, and
+the launch skills' "Not covered" sections quoted in full.

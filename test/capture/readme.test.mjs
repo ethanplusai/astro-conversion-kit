@@ -30,6 +30,7 @@ function writeMediaSamples(dir, origin) {
     { url: upload('hero.jpg'), path: '/wp-content/uploads/2026/01/hero.jpg', source: ['srcset', 'og'], referencedBy: ['/'], status: 200, contentType: 'image/jpeg', bytes: 120000 },
     { url: upload('team.jpg'), path: '/wp-content/uploads/2026/01/team.jpg', source: ['srcset'], referencedBy: ['/about/'], status: 200, contentType: 'image/jpeg', bytes: 90000 },
     { url: upload('logo.svg'), path: '/wp-content/uploads/2026/01/logo.svg', source: ['html'], referencedBy: ['/', '/about/'], status: 200, contentType: 'image/svg+xml', bytes: 1200 },
+    { url: upload('team-150x150.jpg'), path: '/wp-content/uploads/2026/01/team-150x150.jpg', source: ['rest'], referencedBy: [], status: null, contentType: null, bytes: null, downloaded: false, reason: 'unreferenced size' },
   ];
   writeFileSync(join(dir, 'media.json'), `${JSON.stringify(media, null, 2)}\n`);
   mkdirSync(join(dir, 'css'), { recursive: true });
@@ -122,6 +123,8 @@ test('the README covers templates, vendors, indexing and the Wayback check', () 
   // Eleven linked pages plus the seeded noindex page, each with its own ?p= shortlink.
   assert.match(readme, /\| shortlink \| 12 \| 12 unverified \|/, 'redirects by source');
   assert.match(readme, /Media files: 3, 206\.3 KB/);
+  assert.match(readme, /Unreferenced sizes: 1 \(listed only, not downloaded; media\.mjs --sizes all fetches them\)/);
+  assert.doesNotMatch(readme, /Not 200/, 'a size listed only is not a broken file');
   assert.match(readme, /Largest: \/wp-content\/uploads\/2026\/01\/hero\.jpg \(117\.2 KB\)/);
   assert.match(readme, /\/contact\/.*name, email, message, website/);
   assert.match(readme, /\/feed\//);

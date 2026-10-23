@@ -1,6 +1,6 @@
 // Paced, read-only HTTP for live sites.
-// fetchPaced(url, { delayMs, ua, redirect, method, raw, trusted, timeoutMs, idleMs, maxBytes,
-//   toFile, discardBody }) -> { status, headers, body, finalUrl, bytes, error? }
+// fetchPaced(url, { delayMs, concurrency, ua, redirect, method, raw, trusted, timeoutMs, idleMs,
+//   maxBytes, toFile, discardBody, windowMs, slowMs }) -> { status, headers, body, finalUrl, bytes, error? }
 // - body is a string for text types and a Buffer otherwise; `raw: true` always gives the Buffer;
 // - method defaults to GET (HEAD for a size check without the body);
 // - timeoutMs (default 30 s) bounds the whole request, body included; idleMs (default 30 s)
@@ -13,16 +13,39 @@
 //   host:port (www or not) is resolved first, and a loopback, private, link-local or cloud
 //   metadata address is refused without a request: status "blocked-address";
 // - redirect: 'follow' follows up to 20 hops by hand, each one through the guard;
-// - waits delayMs (default 2500) since the previous request to the same host;
-// - doubles that host's wait after a 429 or 503, back to normal after a success;
-// - counts consecutive 403/429/503/network errors in `blocked` (callers stop at 3);
+// - a per-host limiter: request starts on one host are delayMs apart (default 400) and at most
+//   `concurrency` (default 4) are in flight at once; one at a time (concurrency 1, or a host cut
+//   to 1), the delay runs from the end of the previous request, as the old pacing did;
+// - a 429 or 503 doubles that host's delay and drops it to one request in flight; after each
+//   windowMs (default 30 s) with only clean answers it recovers one step (half the delay, one
+//   more in flight) until it is back to the caller's delayMs and concurrency;
+// - an answer whose headers take longer than slowMs (default 5 s) halves the host's concurrency
+//   (never below 1, and not again while halved), recovering one more in flight after each
+//   windowMs of clean answers;
+// - counts consecutive 403/429/503/network errors in `blocked` (callers stop at 3), in the order
+//   the answers arrive;
 // - never throws: a network error or timeout comes back as status 0 with `error` set.
 import { lookup } from 'node:dns/promises';
 import { mkdir, open, rename, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { isIP } from 'node:net';
 
-export const DEFAULT_DELAY_MS = 2500;
+export const DEFAULT_DELAY_MS = 400;
+export const DEFAULT_CONCURRENCY = 4;
+// --polite: the old behaviour, one request at a time, 2.5 s apart.
+export const POLITE_DELAY_MS = 2500;
+export const POLITE_CONCURRENCY = 1;
+export const BACKOFF_WINDOW_MS = 30_000;
+
+// The pacing a script runs with: --polite gives the old one-at-a-time pacing, and --delay or
+// --concurrency (null when not given) override either that or the script's defaults.
+export function pacing({ polite = false, delayMs = null, concurrency = null } = {}, { delay = DEFAULT_DELAY_MS, inFlight = DEFAULT_CONCURRENCY } = {}) {
+  return {
+    delayMs: delayMs ?? (polite ? POLITE_DELAY_MS : delay),
+    concurrency: concurrency ?? (polite ? POLITE_CONCURRENCY : inFlight),
+  };
+}
+export const SLOW_MS = 5_000;
 export const DEFAULT_UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 export const BLOCK_LIMIT = 3;
@@ -40,7 +63,8 @@ const BLOCK_STATUSES = new Set([403, 429, 503]);
 const BACKOFF_STATUSES = new Set([429, 503]);
 const TEXT_TYPE = /^(text\/|application\/(.*\+)?(xml|json|javascript)|image\/svg\+xml)/i;
 
-const hosts = new Map(); // host -> { lastAt, backoff }
+// host -> { lastStart, lastEnd, inFlight, backoff, cap, slowCap, troubleAt, slowAt, waiting[], timer }
+const hosts = new Map();
 
 export let blocked = 0;
 
@@ -55,17 +79,82 @@ export const http = {
   resetBlocked,
 };
 
-const sleep = (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 
-async function pace(host, delayMs) {
-  const state = hosts.get(host) ?? { lastAt: 0, backoff: 1 };
-  hosts.set(host, state);
-  // Reserve the next start slot before waiting, so concurrent callers are spaced too.
+// How many requests may be in flight on a host for a caller that asked for `concurrency`.
+const allowed = (state, concurrency) =>
+  Math.max(1, Math.min(concurrency, state.cap ?? Infinity, state.slowCap ?? Infinity));
+
+// Starts the waiting requests, first come first served, while the host has room and its delay
+// has passed: since the previous start, or, when the host takes one request at a time (--polite,
+// or after a 429), since the previous request ended, so a slow host gets the whole delay of quiet.
+function pump(state) {
+  if (state.timer) return;
+  while (state.waiting.length > 0) {
+    const next = state.waiting[0];
+    if (state.inFlight >= allowed(state, next.concurrency)) return;
+    const serial = allowed(state, next.concurrency) === 1;
+    const since = serial ? Math.max(state.lastStart, state.lastEnd) : state.lastStart;
+    const wait = since + next.delayMs * state.backoff - Date.now();
+    if (wait > 0) {
+      state.timer = setTimeout(() => {
+        state.timer = null;
+        pump(state);
+      }, wait);
+      return;
+    }
+    state.waiting.shift();
+    state.inFlight += 1;
+    state.lastStart = Date.now();
+    next.start();
+  }
+}
+
+// Waits for a slot on the host; returns its state. Call release(state) when the request is over.
+function acquire(host, delayMs, concurrency) {
+  let state = hosts.get(host);
+  if (!state) {
+    state = { lastStart: 0, lastEnd: 0, inFlight: 0, backoff: 1, cap: null, slowCap: null, troubleAt: 0, slowAt: 0, waiting: [], timer: null };
+    hosts.set(host, state);
+  }
+  return new Promise((start) => {
+    state.waiting.push({ delayMs, concurrency, start: () => start(state) });
+    pump(state);
+  });
+}
+
+function release(state) {
+  state.inFlight -= 1;
+  state.lastEnd = Date.now();
+  pump(state);
+}
+
+// The limiter's view of one answer: a 429 or 503 backs off, a slow one halves the concurrency
+// (not again while it is halved; a later slow answer only restarts its window), and a clean one
+// past a window recovers a step of each.
+function adapt(state, { status, waitedMs, concurrency, windowMs, slowMs }) {
   const now = Date.now();
-  const at = Math.max(now, state.lastAt + delayMs * state.backoff);
-  state.lastAt = at;
-  if (at > now) await sleep(at - now);
-  return state;
+  if (BACKOFF_STATUSES.has(status)) {
+    state.backoff = Math.min(state.backoff * 2, MAX_BACKOFF);
+    state.cap = 1;
+    state.troubleAt = now;
+    state.lastStart = Math.max(state.lastStart, now); // the doubled wait counts from this answer
+    return;
+  }
+  if (waitedMs > slowMs) {
+    if (state.slowCap === null) state.slowCap = Math.max(1, Math.floor(allowed(state, concurrency) / 2));
+    state.slowAt = now;
+    return;
+  }
+  if (status === 0 || BLOCK_STATUSES.has(status)) return;
+  if ((state.backoff > 1 || state.cap !== null) && now - state.troubleAt >= windowMs) {
+    state.backoff = Math.max(1, state.backoff / 2);
+    state.cap = state.cap === null || state.cap + 1 >= concurrency ? null : state.cap + 1;
+    state.troubleAt = now;
+  }
+  if (state.slowCap !== null && now - state.slowAt >= windowMs) {
+    state.slowCap = state.slowCap + 1 >= concurrency ? null : state.slowCap + 1;
+    state.slowAt = now;
+  }
 }
 
 // IPv4 dotted quad -> 32-bit number, or null.
@@ -214,10 +303,28 @@ async function readBody(res, { maxBytes, toFile, discardBody, touch }) {
   }
 }
 
-export async function fetchPaced(url, {
-  delayMs = DEFAULT_DELAY_MS, ua = DEFAULT_UA, redirect = 'manual', method = 'GET', raw = false,
+export async function fetchPaced(url, options = {}) {
+  const { delayMs = DEFAULT_DELAY_MS, concurrency = DEFAULT_CONCURRENCY, windowMs = BACKOFF_WINDOW_MS, slowMs = SLOW_MS } = options;
+  const host = new URL(url).host;
+  const state = await acquire(host, delayMs, concurrency);
+  const started = Date.now();
+  let waitedMs = 0;
+  try {
+    const res = await request(url, options, () => {
+      waitedMs = Date.now() - started;
+    });
+    if (typeof res.status === 'number') adapt(state, { status: res.status, waitedMs: waitedMs || Date.now() - started, concurrency, windowMs, slowMs });
+    return res;
+  } finally {
+    release(state);
+  }
+}
+
+// One request inside a limiter slot. `answered` is called when the first response's headers arrive.
+async function request(url, {
+  ua = DEFAULT_UA, redirect = 'manual', method = 'GET', raw = false,
   trusted = [], timeoutMs = TIMEOUT_MS, idleMs = IDLE_MS, maxBytes, toFile = null, discardBody = false,
-} = {}) {
+} = {}, answered = () => {}) {
   let target = new URL(url);
   const trust = trustedHosts(trusted);
   const cap = maxBytes ?? (toFile || discardBody ? MAX_FILE_BYTES : MAX_TEXT_BYTES);
@@ -226,7 +333,6 @@ export async function fetchPaced(url, {
   const deadline = Date.now() + timeoutMs;
   const first = await guard(target, trust, deadline);
   if (first?.address) return refused(first.address, target);
-  const state = await pace(target.host, delayMs);
 
   const idle = new AbortController();
   let idleTimer;
@@ -237,7 +343,6 @@ export async function fetchPaced(url, {
   const signal = AbortSignal.any([AbortSignal.timeout(timeoutMs), idle.signal]);
   const fail = (err) => {
     blocked += 1;
-    state.lastAt = Math.max(state.lastAt, Date.now());
     return { status: 0, headers: {}, body: '', finalUrl: target.href, bytes: null, error: err.cause?.code ?? err.message };
   };
 
@@ -249,6 +354,7 @@ export async function fetchPaced(url, {
     let hopMethod = method;
     for (let hop = 0; ; hop += 1) {
       res = await fetch(target, { method: hopMethod, redirect: 'manual', headers: { 'User-Agent': ua, Accept: '*/*' }, signal });
+      if (hop === 0) answered();
       touch();
       const location = res.headers.get('location');
       if (redirect !== 'follow' || !REDIRECT_STATUSES.has(res.status) || !location || hop >= MAX_REDIRECTS) break;
@@ -258,7 +364,6 @@ export async function fetchPaced(url, {
       const check = await guard(target, trust, deadline);
       if (check?.address) {
         clearTimeout(idleTimer);
-        state.lastAt = Math.max(state.lastAt, Date.now());
         return refused(check.address, target);
       }
       if (check?.network) throw Object.assign(new Error(check.network), { cause: { code: check.network } });
@@ -280,11 +385,8 @@ export async function fetchPaced(url, {
   clearTimeout(idleTimer);
 
   const headers = Object.fromEntries(res.headers);
-  state.lastAt = Math.max(state.lastAt, Date.now());
   if (BLOCK_STATUSES.has(res.status)) blocked += 1;
   else blocked = 0;
-  if (BACKOFF_STATUSES.has(res.status)) state.backoff = Math.min(state.backoff * 2, MAX_BACKOFF);
-  else if (res.status < 400) state.backoff = 1;
 
   if (read.tooLarge) {
     return { status: TOO_LARGE, headers, body: '', finalUrl: target.href, bytes: null, error: `larger than ${cap} bytes (answered ${res.status})` };

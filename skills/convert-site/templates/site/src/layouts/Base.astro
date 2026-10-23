@@ -1,8 +1,14 @@
 ---
 // Shared document shell. Head values come from capture/, never retyped.
+// site.css is linked by URL before the head slot: an imported stylesheet would land at the end of
+// <head>, after a page's own <style> blocks. A page sheet (src/styles/pages/, css-prune's
+// pageSheets) is linked after it, only on the pages that pass its file name as pageSheet.
 import { INDEXABLE } from '../lib/site.mjs';
+import siteCss from '../styles/site.css?url';
+const pageSheets = import.meta.glob('../styles/pages/*.css', { query: '?url', import: 'default', eager: true });
 
-const { title, description, canonical, robots, lang = 'en' } = Astro.props;
+const { title, description, canonical, robots, lang = 'en', pageSheet } = Astro.props;
+const pageCss = pageSheet ? pageSheets[`../styles/pages/${pageSheet}`] : null;
 ---
 <!doctype html>
 <html lang={lang}>
@@ -14,6 +20,8 @@ const { title, description, canonical, robots, lang = 'en' } = Astro.props;
     {canonical && <link rel="canonical" href={canonical} />}
     {robots && <meta name="robots" content={robots} />}
     {!INDEXABLE && <meta name="robots" content="noindex, nofollow" />}
+    <link rel="stylesheet" href={siteCss} />
+    {pageCss && <link rel="stylesheet" href={pageCss} />}
     <slot name="head" />
   </head>
   <body class={Astro.props.bodyClass}>

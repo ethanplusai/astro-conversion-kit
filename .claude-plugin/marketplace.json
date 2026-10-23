@@ -7,7 +7,7 @@
     {
       "name": "astro-conversion",
       "source": "./",
-      "description": "Convert a live website into a static Astro site with URL, content, SEO and visual parity gates, then launch it safely.",
+      "description": "Convert a WordPress site (or any live site) into a static Astro site with URL, content, SEO and visual parity gates, then launch it safely.",
       "skills": [
         "./skills/convert-site",
         "./skills/capture-site",

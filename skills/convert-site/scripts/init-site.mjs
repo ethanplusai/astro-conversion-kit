@@ -59,7 +59,7 @@ const TRAILING = { always: 'directory', never: 'file' };
 const ALLOWED_EXISTING = new Set(['.git', '.gitignore', 'README.md', 'README', '.DS_Store', 'capture', '.conversion']);
 // Template files appended to an existing file of the same name instead of replacing it.
 const APPEND_TO_EXISTING = new Set(['README.md', '.gitignore']);
-const CONVERT_SCRIPTS = ['css-coverage', 'css-prune', 'media-plan', 'media-upload', 'state'];
+const CONVERT_SCRIPTS = ['css-coverage', 'css-prune', 'media-plan', 'media-upload', 'review-serve', 'state'];
 const PINNED_DEPS = ['parse5', 'playwright', 'pixelmatch', 'pngjs', 'css-tree'];
 const COMMIT_SUBJECT = 'chore: scaffold from astro-conversion-kit';
 // Vercel URL handling per trailing-slash mode; cleanUrls never goes with the directory format.

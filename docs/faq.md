@@ -12,25 +12,34 @@ or empty repository, nothing is committed to `main`; all work goes on `astro-reb
 
 ## How long does it take?
 
-Mostly the crawl, which makes one request every 2.5 seconds by default: 100 pages take about four
-minutes, and every media file, stylesheet, font and feed is one more request, so a site with 100
-pages and 1,000 images takes closer to 45 minutes. The build and the visual review depend on how many distinct templates the site has more than on page
-count. A small brochure site is usually a single sitting; larger sites are better run in sessions,
+Reading the live site is quick on a host that allows it: the capture starts a request every 400 ms
+with up to four in flight, so 100 pages take about 1 to 2 minutes, and the media step downloads
+six files at a time, so 1,000 media files take about 5 to 8 minutes. On WordPress it downloads the
+originals and the image sizes the site actually uses, not every size WordPress registered. A host
+that pushes back (429 or 503) is slowed down automatically, and `--polite` (one request every
+2.5 seconds) is there for hosts with a bot wall, at roughly six times the time. The build and the
+visual review depend on how many distinct templates the site has more than on page count. A small brochure site is usually a single sitting; larger sites are better run in sessions,
 and the run resumes from its state file.
 
 ## Can I make the crawl faster?
 
-The pace is there so the live site does not slow down or block you. If it is your own site and
-your host can take it, `--delay` lowers it. If the site starts answering 429 or 503, the crawl
-backs off on its own, and after three blocks in a row it stops and saves its place.
+It already is, by default: 400 ms between request starts and up to four requests in flight per
+host (six for media). The pace adapts on its own: a 429 or 503 doubles the delay and drops the
+host to one request at a time, recovering a step every 30 seconds of clean answers, and an answer
+slower than 5 seconds halves the requests in flight until 30 seconds of clean answers step it
+back up. After three blocks in a row it stops and
+saves its place. If it is your own site and your host can take more, `--delay` and
+`--concurrency` raise the pace; on shared hosting with a bot wall, use `--polite` (one request
+at a time, 2.5 s apart) from the start.
 
 ## What if the media library is huge?
 
 Media stays in the repository only when the total is under 300 MB, no single file is over 25 MB
 and there are fewer than 10,000 files. Over any of those, it goes to Vercel Blob or Cloudflare R2
 and the host rewrites the original paths to the store, so no media URL changes. Every file the site
-or its API knows about is carried, including image sizes nothing links to, because outside links
-to them cannot be known. See [hosting.md](hosting.md).
+uses is carried. Image sizes that only the WordPress API knows about are listed, not downloaded,
+so the plan and the launch runbook show them; run the media step with `--sizes all` if old emails
+or other sites may link to them. See [hosting.md](hosting.md).
 
 ## The site has a store. Can it convert?
 

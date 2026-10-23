@@ -27,7 +27,7 @@ const EXPECTED_FILES = [
   'package.json', 'astro.config.mjs', '.nvmrc', '.gitignore', 'AGENTS.md', 'CLAUDE.md', 'README.md',
   'exceptions.json', 'proposals.json', 'src/layouts/Base.astro', 'src/lib/exceptions.mjs',
   'src/lib/site.mjs', 'src/pages/404.astro', 'src/pages/robots.txt.js', 'docs/LAUNCH.md',
-  'docs/plan.md', 'docs/third-party.md',
+  'docs/plan.md', 'docs/third-party.md', 'src/styles/site.css',
 ];
 
 // Copied scripts are copied verbatim: placeholders inside them are not substituted.
@@ -158,7 +158,16 @@ test('init scaffolds templates, copies scripts, commits on main and switches to 
   assert.match(readFileSync(join(dir, 'docs', 'LAUNCH.md'), 'utf8'), /www\.fixture-roofing\.test/);
   assert.match(readFileSync(join(dir, 'src', 'lib', 'site.mjs'), 'utf8'),
     /export const INDEXABLE = process\.env\.PUBLIC_INDEXABLE === 'true'/);
-  assert.match(readFileSync(join(dir, 'src', 'layouts', 'Base.astro'), 'utf8'), /noindex, nofollow/);
+  const base = readFileSync(join(dir, 'src', 'layouts', 'Base.astro'), 'utf8');
+  assert.match(base, /noindex, nofollow/);
+  // site.css by URL and linked by hand before the head slot (an imported stylesheet would land at
+  // the end of <head>); a page sheet from src/styles/pages/ after it, on the pages that name one.
+  assert.match(base, /^import siteCss from '\.\.\/styles\/site\.css\?url';$/m);
+  assert.match(base, /import\.meta\.glob\('\.\.\/styles\/pages\/\*\.css', \{ query: '\?url', import: 'default', eager: true \}\)/);
+  assert.doesNotMatch(base, /^import '\.\.\/styles\/site\.css';$/m);
+  const order = ['<link rel="stylesheet" href={siteCss} />', '{pageCss && <link rel="stylesheet" href={pageCss} />}', '<slot name="head" />'].map((s) => base.indexOf(s));
+  assert.ok(order.every((at, i) => at > 0 && (i === 0 || at > order[i - 1])), `site.css, the page sheet, then the head slot: ${order}`);
+  assert.match(readFileSync(join(dir, 'src', 'styles', 'site.css'), 'utf8'), /css-prune\.mjs/);
   const ignore = readFileSync(join(dir, '.gitignore'), 'utf8').split('\n');
   for (const entry of ['/capture/screens/', '/capture/lighthouse-live/', '/review/', 'node_modules', 'dist',
     '.astro', '.env*', '!.env.example', '.conversion/*.tmp', '/media-cache/', '.vercel']) {
@@ -179,6 +188,8 @@ test('init scaffolds templates, copies scripts, commits on main and switches to 
     assert.equal(pkg.scripts[`review:${name}`], `node scripts/review/${name}.mjs`);
   }
   assert.equal(pkg.scripts['review:check'], 'node scripts/review/check.mjs --review review');
+  assert.equal(pkg.scripts['review:serve'], 'node scripts/review-serve.mjs');
+  assert.match(readFileSync(join(dir, 'README.md'), 'utf8'), /^\| `npm run review:serve` \| Serve `dist\/` with vercel\.json applied, for the visual review \|$/m);
   assert.match(readFileSync(join(dir, 'README.md'), 'utf8'), /^\| `npm run review:check` \| Re-reads every diff and style result; exits 1 if any row fails \|$/m);
   assert.match(agents, /review:shoot`, `review:diff`, `review:styles`, `review:sheet` and `review:check`/);
   assert.equal(pkg.scripts.dev, 'astro dev');
@@ -209,7 +220,7 @@ test('the real copied scripts answer --help from inside the scaffolded site', (t
   assert.equal(result.status, 0, result.stdout + result.stderr);
   // Stands in for npm install: the site resolves the pinned packages from its own node_modules.
   symlinkSync(join(ROOT, 'node_modules'), join(dir, 'node_modules'), 'dir');
-  const scripts = ['scripts/review/shoot.mjs', 'scripts/state.mjs', 'scripts/media-upload.mjs', 'scripts/verify-live.mjs']
+  const scripts = ['scripts/review/shoot.mjs', 'scripts/state.mjs', 'scripts/media-upload.mjs', 'scripts/review-serve.mjs', 'scripts/verify-live.mjs']
     .filter((script) => script !== 'scripts/verify-live.mjs' || existsSync(join(dir, script)));
   for (const script of scripts) {
     const help = spawnSync(process.execPath, [script, '--help'], { cwd: dir, encoding: 'utf8' });
@@ -327,6 +338,7 @@ const LAUNCH_SCRIPTS = {
   'review:diff': ['visual-review', 'diff.mjs'],
   'review:sheet': ['visual-review', 'sheet.mjs'],
   'review:styles': ['visual-review', 'styles.mjs'],
+  'review:serve': ['convert-site', 'review-serve.mjs'],
   'verify:live': ['parity-gates', 'verify-live.mjs'],
   verify: ['parity-gates', 'verify/forms.mjs', 'verify/routes.mjs'],
   'verify:release': ['parity-gates', 'verify/forms.mjs', 'verify/routes.mjs'],
@@ -367,6 +379,8 @@ test('docs/LAUNCH.md: every command complete, its flags in the script --help, th
   // review:check reads review/styles.json, so B writes it; and says where the step can run.
   assert.match(launch, /npm run review:styles -- --live https:\/\/www\.fixture-roofing\.test --new http:\/\/localhost:4321 --routes capture\/templates\.json --widths 390,768,1440 --out review\/styles\.json/);
   assert.match(launch.replace(/\s+/g, ' '), /on the machine that ran the conversion/);
+  assert.match(launch.replace(/\s+/g, ' '), /With `npm run review:serve` running in a second terminal/);
+  assert.doesNotMatch(launch, /npm run preview/);
   const agents = readFileSync(join(dir, 'AGENTS.md'), 'utf8');
   assert.doesNotMatch(agents, /forms@example\.com/);
   assert.match(agents.replace(/\s+/g, ' '), /goes only to the address given at intake/);

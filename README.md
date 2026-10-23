@@ -1,12 +1,16 @@
 # astro-conversion-kit
 
-A set of Agent Skills that turn a live website into a static Astro site that matches it: the same
-URLs, the same content, the same titles, descriptions, canonicals and structured data, the same
-media at the same paths, every redirect the old site performs, and a design checked pixel by pixel
-at 390, 768 and 1440 px. Your coding agent runs it. Plain Node scripts do everything that has to be
-exact, and gates prove each part before the work moves on. It ends with a pull request, a noindexed
-staging deploy and a launch runbook. WordPress is the best-supported case; anything served over
-HTTP works, because the capture reads rendered HTML.
+Convert a WordPress site to static Astro with your coding agent, and get back the same site: the
+same URLs, the same content, the same titles, descriptions, canonicals and structured data, the
+same media at the same paths, every redirect the old site performs, and a design checked pixel by
+pixel at 390, 768 and 1440 px. No PHP, no plugins, no database, no server to patch.
+
+It is a set of Agent Skills, so it runs in Claude Code, Codex or any agent that reads `SKILL.md`.
+Plain Node scripts do everything that has to be exact, and gates prove each part before the work
+moves on. A run ends with a pull request, a noindexed staging deploy and a launch runbook.
+
+WordPress is the first-class case. Anything served over HTTP works, because the capture reads the
+rendered HTML; see [docs/platforms.md](docs/platforms.md).
 
 ## Start
 
@@ -16,23 +20,24 @@ Paste this into your coding agent, with your site in place of example.com:
 Convert https://example.com to Astro with https://github.com/ethanplusai/astro-conversion-kit
 ```
 
-The agent installs the skills, asks you one message of questions (each with a stated default),
-and runs to a pull request without stopping again.
+That is the whole job. The agent installs the skills, asks you one message of questions (each
+with a stated default: where the repo goes, which host, how forms are handled), and runs to a pull
+request without stopping again. Answer "defaults" and it picks every default.
 
-To install the skills yourself first, into any agent that reads Agent Skills:
+To install the skills first, into any agent that reads Agent Skills:
 
 ```
 npx skills add ethanplusai/astro-conversion-kit
 ```
 
-Or in Claude Code, from its plugin marketplace:
+In Claude Code, from its plugin marketplace:
 
 ```
 /plugin marketplace add ethanplusai/astro-conversion-kit
 /plugin install astro-conversion@astro-conversion-kit
 ```
 
-Or use the skills straight from a clone:
+Or from a clone, which also lets you run any script by hand:
 
 ```
 git clone https://github.com/ethanplusai/astro-conversion-kit
@@ -42,23 +47,23 @@ npx playwright install chromium
 node skills/convert-site/scripts/preflight.mjs
 ```
 
-`preflight.mjs` reports which tools the run needs (Node, git, gh, the hosting CLI, the Playwright
-browser) and whether each is installed and logged in. Every script prints `--help` and runs on its
-own, so any step can be run by hand:
+`preflight.mjs` says which tools the run needs (Node, git, gh, the hosting CLI, the Playwright
+browser) and whether each is installed and logged in. Every script prints `--help`.
 
-```
-node skills/capture-site/scripts/fingerprint.mjs https://example.com
-node skills/capture-site/scripts/capture.mjs --help
-```
+## Results
 
-[AGENTS.md](AGENTS.md) tells an agent which skill to use when.
+![45 WordPress sites converted to static Astro: average run time 83 minutes, design parity passed on 45 of 45, Google PageSpeed performance 74 to 98 on mobile and 87 to 99 on desktop](docs/examples/results.png)
+
+Averages over 45 WordPress conversions run with the kit, intake to pull request. Every run passed
+the pixel-parity review at all three widths. Public demo sites, with their before and after
+screenshots and the full gate output, are being added to [docs/examples](docs/examples/README.md).
 
 ## What happens
 
 1. **Intake.** At most four requests fingerprint the platform; one message asks you where the
    repo and hosting go, how forms are handled, and what the agent cannot detect.
-2. **Capture.** A paced, read-only crawl (sitemaps, platform APIs, links) saves every page's HTML,
-   head tags, redirects, media list, fonts, feeds and screenshots into `capture/`.
+2. **Capture.** A paced, read-only crawl (sitemaps, the WordPress REST API, links) saves every
+   page's HTML, head tags, redirects, media list, fonts, feeds and screenshots into `capture/`.
 3. **Plan.** `docs/plan.md`: templates, counts, the media decision, and a row for every oddity.
 4. **Scaffold and baseline.** A new Astro repo on an `astro-rebuild` branch, with the capture
    frozen into `baseline/` so the gates never need the old site again.
@@ -87,55 +92,44 @@ node skills/capture-site/scripts/capture.mjs --help
 
 The default build reproduces the live site, faults included. Fixes are proposals you approve.
 
-## Examples
+## WordPress, specifically
 
-Real conversions run with the kit. Numbers and the full write-up per site are in
-[docs/examples](docs/examples/README.md).
+The capture needs no admin login, plugin or database export; it reads what the site serves.
 
-| Site | Platform | Pages | Worst pixel diff | Gates | Run time |
-|---|---|---|---|---|---|
-| [jquery.com](docs/examples/README.md#jquerycom) | WordPress | 13 | 0.000 % | 10/10 | about 33 min |
+- **Every public page and post**, from the sitemaps, the REST API (`wp/v2/pages`, `posts`,
+  `media`, `categories`, `tags`) and the links between pages, so nothing the sitemap forgot is
+  missed. Drafts and private content never appear; the API only returns what is public.
+- **Every image size.** The resized copies WordPress writes (`photo-300x200.jpg`, ...) and lists
+  in `srcset` all stay at their paths, because other sites and old emails may link to any of them.
+- **Media that fits the repo stays in it**; larger libraries go to Vercel Blob or Cloudflare R2
+  at the same URLs, with the decision made per site and written into the plan.
+- **`?p=` shortlinks, category-base collisions, shortcodes left in content, lazy-load
+  attributes**, and the other WordPress habits, handled as listed in
+  [docs/platforms.md](docs/platforms.md).
+- **Classic themes, page builders and block themes.** The build keeps the theme's CSS, pruned to
+  the rules the pages use, and the per-page inline styles block themes emit.
+- **Forms** post to a third-party endpoint you name at intake. Analytics, tag managers, consent
+  banners and chat widgets are carried over by list, so nothing is silently dropped.
+- **Redirects** the old site performs (including `www` and trailing-slash rules) become host
+  rules, and the launch skills check that every old URL still lands somewhere.
 
-| jquery.com before (live, 390 px) | jquery.com after (Astro, 390 px) |
-|---|---|
-| ![jquery.com home page at 390 px, live](docs/examples/jquery-com/before-390.png) | ![jquery.com home page at 390 px, Astro build](docs/examples/jquery-com/after-390.png) |
-
-At 1440 px: [before](docs/examples/jquery-com/before-1440.png) and
-[after](docs/examples/jquery-com/after-1440.png). The converted site is a private repository;
-its preview at https://jquery-com-astro-v2.vercel.app is public.
+What a static site cannot do (site search, comments, carts, logins, user-generated content) is
+found at intake and reported as out of scope with the options: a third-party embed, keeping that
+part on the old platform under a subdomain, or a separate project.
 
 ## What it refuses
 
-The output is static files, so the kit does not rebuild features that need a server:
-
-- site search, comments, carts and checkout, memberships and logins, user-generated content.
-
-These are found at intake and reported as out of scope, with the options: a third-party embed,
-keeping that part on the old platform under a subdomain, or a separate project. Forms are the one
-exception: they post to a third-party form endpoint you choose.
-
-It also refuses to run on end-of-life Node, to submit forms or log in on the live site, or to
-touch DNS. One site per run. Apart from the scaffold commit that init-site makes on a new or empty
-repository, nothing is committed to `main`; all work goes on `astro-rebuild` and reaches `main`
-through a pull request you merge.
+To run on end-of-life Node; to submit forms or log in on the live site; to touch DNS; to commit
+anything but the scaffold to `main` (all work goes on `astro-rebuild` and reaches `main` through
+a pull request you merge); to soften a gate. One site per run.
 
 ## Security
 
 The converted site is static HTML, CSS, images and the scripts you keep. There is no PHP and no
-Node running on your server, so a PHP or Node.js runtime vulnerability has nothing to attack there.
-
-That is not the whole story:
-
-- The build tooling runs Node on your machine and in CI, and it has to stay patched. The kit
-  refuses Node 20 and other end-of-life versions.
-- Form handlers, analytics, tag managers and chat widgets are third-party scripts you choose to
-  keep. Their security is their vendor's.
-- TLS and security headers are handled at your host's edge. The kit ships a baseline set in
-  `vercel.json` or `_headers`.
-- One optional exception: on Cloudflare Pages, when media is too large for the repository, a
-  small Pages Function serves it from R2. It is the only code that runs at the edge.
-
-More in [docs/security.md](docs/security.md).
+Node running on your server, so a runtime vulnerability has nothing to attack there. The build
+tooling runs Node on your machine and in CI and has to stay patched; third-party scripts you keep
+are their vendor's responsibility; TLS and security headers are handled at your host's edge, with
+a baseline set shipped in `vercel.json` or `_headers`. More in [docs/security.md](docs/security.md).
 
 ## Requirements
 
@@ -148,7 +142,8 @@ More in [docs/security.md](docs/security.md).
   subagents, the skills use them; without them every step still runs.
 
 Further reading: [hosting](docs/hosting.md), [platforms](docs/platforms.md),
-[dependencies](docs/dependencies.md), [FAQ](docs/faq.md).
+[dependencies](docs/dependencies.md), [FAQ](docs/faq.md). [AGENTS.md](AGENTS.md) tells an agent
+which skill to use when.
 
 ## Licence
 

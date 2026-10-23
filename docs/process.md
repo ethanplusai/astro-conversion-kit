@@ -32,8 +32,10 @@ stop; anything that later needs an account the agent does not have goes into the
 
 ## 2. Capture
 
-A paced crawl, 2.5 s between requests by default, with a normal browser user agent. It backs off
-on 429 and 503 and stops after three consecutive blocks, saving its state so it resumes. The page
+A paced crawl, by default 400 ms between request starts with up to four in flight per host
+(`--polite`: one at a time, 2.5 s apart), with a normal browser user agent. A 429 or 503 doubles
+the delay and drops the host to one request at a time; it stops after three consecutive blocks,
+saving its state so it resumes. The page
 set is the union of sitemaps, the platform API (WordPress REST when present) and the link crawl;
 legacy URLs from the Wayback Machine are added and marked unverified. For every page it saves the
 raw HTML, the visible main text and an inventory: title, description, robots, canonical, hreflang,

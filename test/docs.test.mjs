@@ -81,7 +81,8 @@ test('README carries the paste line, both install paths and the examples heading
   assert.match(blocks, /^npx skills add ethanplusai\/astro-conversion-kit$/m, 'npx skills add block');
   assert.match(blocks, /^\/plugin marketplace add ethanplusai\/astro-conversion-kit$/m, 'plugin marketplace line');
   assert.match(blocks, /^\/plugin install astro-conversion/m, 'plugin install line');
-  assert.match(readme, /^## Examples$/m, 'examples heading');
+  assert.match(readme, /^## Results$/m, 'results heading');
+  assert.match(readme, /\]\(docs\/examples\/results\.png\)/, 'results image');
 });
 
 test('README stays under 200 lines', () => {

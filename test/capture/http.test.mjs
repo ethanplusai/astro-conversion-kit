@@ -119,27 +119,6 @@ test('fetchPaced follows redirects by hand on the trusted host', async () => {
   }
 });
 
-test('concurrent fetchPaced calls to one host start --delay apart', async () => {
-  const starts = [];
-  const server = await startRaw((req, res) => {
-    starts.push(Date.now());
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('ok');
-  });
-  try {
-    const delayMs = 150;
-    const all = await Promise.all(Array.from({ length: 4 }, (_, i) =>
-      fetchPaced(`${server.origin}/${i}`, { delayMs, trusted: [server.origin] })));
-    assert.ok(all.every((r) => r.status === 200));
-    starts.sort((a, b) => a - b);
-    const gaps = starts.slice(1).map((t, i) => t - starts[i]);
-    // A few ms of timer slack; before the slot was reserved, all four started at once.
-    assert.ok(gaps.every((gap) => gap >= delayMs - 20), `gaps ${gaps.join(', ')}`);
-  } finally {
-    await server.close();
-  }
-});
-
 test('a text body over the cap is "too-large", decoded size included', async () => {
   const big = 'x'.repeat(5000);
   const server = await startRaw((req, res) => {

@@ -45,7 +45,11 @@ sites this kit did not build.
 - **The live site is read-only.** Only these read it, paced: the capture scripts, `shoot.mjs`
   and `styles.mjs` on live, `css-coverage.mjs`, `launch-audit --old-url` and `pre-launch
   --predecessor-url`. Analytics are blocked on their live page loads, so no visit is counted.
-  They pace requests (2.5 s by default), back off on 429 and 503, and stop after three
+  The capture scripts (capture, media, assets, fingerprint) pace each host (by default 400 ms
+  between request starts, up to 4 in flight, 6 for media; `--polite` for one at a time, 2.5 s
+  apart) and drop to one request at a time with a doubled delay on 429 and 503; the Chromium
+  steps (`shoot`, `css-coverage`, `styles`) load one page at a time, 500 ms apart;
+  `launch-audit` and `pre-launch` keep their own pacing. They stop after three
   consecutive blocks with state saved so a crawl resumes. Never submit a form on it, never log
   in, never change anything.
 - **One intake message, then no stops.** Ask everything once, each question with a stated default.

@@ -90,7 +90,7 @@ rebuild, rerun. One gate alone: `node <skill-dir>/scripts/verify/<gate>.mjs`.
 | `routes` | Every page, post, archive and feed at 200 is built, noindex routes still say noindex, nothing extra is built (the capture's own scripts in `baseline/js.json` at their live paths, the live sitemap names in `baseline/sitemaps.json`, and the launch icon set are not extras); a route captured at any status other than 200, 3xx, 404 or 410 fails as `not captured: <status>` unless a `routes` exception skips it or names its built replacement | A `routes` exception with `to: "skip"`: that route was never captured |
 | `scripts` | Each kept vendor is on exactly its live pages with the same ids; a dropped one on none; no new vendor | |
 | `seo` | Title, description, canonical, robots, lang, h1, h2, og and JSON-LD @types equal per page; site URLs on the site's origin. Unless `PUBLIC_INDEXABLE=true`, robots must carry the staging `noindex, nofollow` and the rest of it equals live's past those two; a release build compares robots exactly | |
-| `sitemaps` | Every top sitemap in `dist/` (Astro's `sitemap-index.xml`, or a live name in `baseline/sitemaps.json` such as `wp-sitemap.xml` or `sitemap_index.xml`) lists exactly the indexable 200 pages on the origin (percent escapes compare case-blind: `%c3` is `%C3`); every robots.txt `Sitemap:` line is on the origin and names a file in `dist/`; every feed is built with as many items | |
+| `sitemaps` | Every top sitemap in `dist/` (Astro's `sitemap-index.xml`, or a live name in `baseline/sitemaps.json` such as `wp-sitemap.xml` or `sitemap_index.xml`) lists exactly the indexable 200 pages on the origin (percent escapes compare case-blind: `%c3` is `%C3`); every robots.txt `Sitemap:` line is on the origin and names a file in `dist/`, or is a line the live robots.txt (`capture/robots.txt`) carried verbatim; every feed is built with as many items | |
 | `text` | Each page's visible text equals `baseline/text/` (word diff, 5 words of context) | |
 
 ## 4. Differences and decisions
@@ -113,20 +113,25 @@ live origin, so its canonicals and sitemap stay on it.
     PROPOSALS=on npm run build && npm run verify:proposals -- --endpoint ... --thank-you ...                 # proposals
     PUBLIC_INDEXABLE=true npm run build && npm run verify:release -- --endpoint ... --thank-you ...          # release
 
-After a staging deploy, check it over HTTP against the baseline (the bypass value from the
-environment, never pasted in chat). A release deploy is checked the same way without
-`--expect-noindex`:
+After a staging deploy, check it over HTTP against the baseline. A release deploy is checked
+the same way without `--expect-noindex`:
 
-    npm run verify:live -- --base https://my-site.vercel.app --expect-noindex --bypass "$VERCEL_AUTOMATION_BYPASS_SECRET"
-    node <skill-dir>/scripts/verify-live.mjs --base https://my-site.vercel.app --expect-noindex --bypass "$VERCEL_AUTOMATION_BYPASS_SECRET"    # fallback
+    npm run verify:live -- --base https://my-site.vercel.app --expect-noindex
+    node <skill-dir>/scripts/verify-live.mjs --base https://my-site.vercel.app --expect-noindex    # fallback
+
+`--bypass "$VERCEL_AUTOMATION_BYPASS_SECRET"` applies only when staging was deliberately
+protected (the bypass value from the environment, never pasted in chat); a public staging alias
+needs none.
 
 It checks every baseline route at 200 (or a `--sample`), every redirect in one hop with the same
 kind of status, noindex on pages iff `--expect-noindex`, the sitemap, and 20 media files by
 bytes (or `--media-manifest`, whose `url` may be the store's absolute URL or a site path checked
 at `<base><path>`). Every request times out after 30 s, a failure of that check rather than a
 block. Exit 3 means it was blocked: wait and rerun. Exit 3 with `deployment protection:` means
-Vercel answered with its login redirect (302 to `vercel.com/sso-api`): pass `--bypass`, or the
-bypass secret has to be created first (a needs-you item), then rerun. A failure marked
+Vercel answered with its login redirect (302 to `vercel.com/sso-api`): use the project's
+production alias (public by default) rather than the raw deployment URL; only when staging was
+deliberately protected, pass `--bypass`, or the bypass secret has to be created first (a
+needs-you item), then rerun. A failure marked
 `unverified live` is a shortlink the capture never requested.
 
 ## Present the result

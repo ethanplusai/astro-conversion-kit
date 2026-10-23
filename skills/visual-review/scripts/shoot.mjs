@@ -11,7 +11,7 @@ import { capture, launchBrowser, NavigationError, newShotContext, pngHeight } fr
 import { readRoutes, RoutesError } from './lib/routes.mjs';
 
 const HELP = `Usage: node shoot.mjs --base <origin> --routes <templates.json|/,/a/b/> --out <dir>
-                      [--widths 390,768,1440] [--delay 2500] [--wait 1500] [--full] [--scale 1]
+                      [--widths 390,768,1440] [--delay 500] [--wait 1500] [--full] [--scale 1]
                       [--allow-analytics]
 
 Takes a full-page Chromium screenshot of every route at every width and writes
@@ -25,7 +25,7 @@ Takes a full-page Chromium screenshot of every route at every width and writes
              list of paths (folder is the path slug: / -> home, /a/b/ -> a__b)
   --widths   comma list of viewport widths in whole CSS pixels (default 390,768,1440)
   --out      output directory
-  --delay    milliseconds between page loads (default 2500)
+  --delay    milliseconds between page loads (default 500)
   --wait     milliseconds to settle before each capture (default 1500)
   --full     with a templates.json, shoot every path of every template
              (folders are path slugs) instead of only the representative
@@ -81,7 +81,7 @@ function parse(argv) {
         routes: { type: 'string' },
         widths: { type: 'string', default: '390,768,1440' },
         out: { type: 'string' },
-        delay: { type: 'string', default: '2500' },
+        delay: { type: 'string', default: '500' },
         wait: { type: 'string', default: '1500' },
         full: { type: 'boolean', default: false },
         scale: { type: 'string', default: '1' },

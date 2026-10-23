@@ -174,8 +174,8 @@ Lead with the PR link (and "draft: waiting on the form id" when it is one), then
 converted (counts), gates and visual review in one line each, the staging URL, the needs-you list
 under **Waiting on you** read from `state.mjs --dir $SITE get needsYou` (each item with the exact
 command or click, in runbook order), then every "Not covered" section verbatim. Say "PR open,
-waiting on your merge", never "done" or "live". Stop any preview server you started (`npx astro
-preview stop`), then stop.
+waiting on your merge", never "done" or "live". Stop any review server you started
+(`npm run review:serve -- --stop`, and `npx astro preview stop` if you used the preview), then stop.
 
 ## Resuming
 
@@ -193,7 +193,7 @@ capture resumes with `--resume`. Never repeat the intake. Applying a suggestion 
 | `references/build-rules.md` | How layouts, content, CSS, media, fonts, lazy images and redirects are built |
 | `references/forms.md` | Formspree wiring, field names, honeypot, thank-you, the form id, the one test submission |
 | `references/third-party.md` | The `keep` allowlist in `baseline/scripts.json` and `docs/third-party.md` |
-| `references/hosting-vercel.md` | Project, previews, indexing, Blob media, protection bypass |
+| `references/hosting-vercel.md` | Project, public noindexed staging, indexing, Blob media, opt-in protection |
 | `references/hosting-cloudflare.md` | Pages project, `_redirects`, `_headers`, R2 media function, query redirects |
 | `references/runbook.md` | `docs/LAUNCH.md`: A needs you, B closeout, C launch day, D 30-day watch |
 | `references/components-optional.md` | The optional component pass |

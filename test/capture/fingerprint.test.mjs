@@ -214,15 +214,18 @@ test('fetchPaced counts 403 and 503 as blocks', async () => {
   }
 });
 
-test('fetchPaced doubles the wait after a 429 and restores it after a success', async () => {
+test('fetchPaced doubles the wait after a 429 and restores it after a window of successes', async () => {
   const stub = await startStub({ '/ok': { body: 'ok' }, '/no': { status: 429 } });
+  const opts = { delayMs: 100, trusted: [stub.origin], windowMs: 150 };
   try {
-    await fetchPaced(`${stub.origin}/no`, { delayMs: 100, trusted: [stub.origin] });
+    await fetchPaced(`${stub.origin}/no`, opts);
     let started = Date.now();
-    await fetchPaced(`${stub.origin}/ok`, { delayMs: 100, trusted: [stub.origin] });
+    await fetchPaced(`${stub.origin}/ok`, opts);
     const doubled = Date.now() - started;
+    await new Promise((done) => setTimeout(done, 160));
+    await fetchPaced(`${stub.origin}/ok`, opts);
     started = Date.now();
-    await fetchPaced(`${stub.origin}/ok`, { delayMs: 100, trusted: [stub.origin] });
+    await fetchPaced(`${stub.origin}/ok`, opts);
     const normal = Date.now() - started;
     assert.ok(doubled >= 190, `waited ${doubled} ms after a 429`);
     assert.ok(normal >= 90 && normal < 180, `waited ${normal} ms after a success`);
@@ -351,6 +354,9 @@ test('a tiny untitled 200 home page is a challenge named by the site host', asyn
 test('fingerprint reports every sitemap robots.txt names, and lists each one it did not expand', async () => {
   const result = await fingerprint(fixture.origin, { fetch: fast });
   assert.deepEqual(result.robotsSitemaps.map((u) => new URL(u).pathname), ['/sitemap_index.xml']);
+  // A Sitemap: line on another host is listed apart and never fetched or expanded.
+  assert.deepEqual(result.otherHostSitemaps, ['http://other.example.com/sitemap_index.xml']);
+  assert.ok(result.sitemapUrls.every((u) => new URL(u).origin === fixture.origin), result.sitemapUrls.join(' '));
 
   const xml = (body) => (origin) => ({ headers: { 'Content-Type': 'application/xml' }, body: body(origin) });
   const stub = await startStub({

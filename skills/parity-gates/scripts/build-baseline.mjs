@@ -21,7 +21,9 @@ Freeze a capture (capture.mjs, media.mjs and templates.mjs output) into a baseli
                   intermediate hop of a chain (A -> B -> C) gets its own row to the final target
                   (B -> C, note "hop of A" in redirects.csv) unless it is a built route
   media.json      [{ path, bytes, contentType, referencedBy }] for every media file answering 200
-                  (referencedBy: the pages that use it, from capture/media.json)
+                  (referencedBy: the pages that use it, from capture/media.json); a size the
+                  capture listed but did not download keeps downloaded: false and its reason
+                  (bytes null), so the media gate counts it as skipped
   forms.json      { "<path>": [{ action, method, fields[] }] }
   scripts.json    { "<vendor>": { id, ids[], pages[], keep } }; keep is true, set it to false
                   to drop a vendor from the build
@@ -218,13 +220,30 @@ function tally(list, keyOf) {
   return sorted(counts);
 }
 
+// { unreferencedSizes: n } when the baseline lists sizes the capture did not download, else {}.
+const unreferencedCount = (media) => {
+  const n = media.filter((m) => m.downloaded === false).length;
+  return n ? { unreferencedSizes: n } : {};
+};
+
+// The baseline's media list: every file answering 200, and every size listed but not downloaded.
+export function baselineMedia(media) {
+  return media
+    .filter((m) => m.status === 200 || m.downloaded === false)
+    .map((m) => {
+      const entry = { path: m.path, bytes: m.bytes, contentType: m.contentType, referencedBy: m.referencedBy ?? [] };
+      return m.downloaded === false ? { ...entry, bytes: null, contentType: null, downloaded: false, reason: m.reason ?? 'unreferenced size' } : entry;
+    });
+}
+
 export function countBaseline({ routes, redirects, media, forms, scripts }) {
   return {
     routes: routes.length,
     byStatus: tally(routes, (r) => r.status),
     byTemplate: tally(routes, (r) => r.template),
     redirects: tally(redirects, (r) => r.source),
-    media: media.length,
+    media: media.filter((m) => m.downloaded !== false).length,
+    ...unreferencedCount(media),
     forms: Object.values(forms).reduce((n, list) => n + list.length, 0),
     scripts: Object.keys(scripts).length,
   };
@@ -321,7 +340,7 @@ function build(capture, out, csvFile) {
   const baseline = {
     routes,
     redirects,
-    media: media.filter((m) => m.status === 200).map((m) => ({ path: m.path, bytes: m.bytes, contentType: m.contentType, referencedBy: m.referencedBy ?? [] })),
+    media: baselineMedia(media),
     forms: buildForms(inventory),
     scripts: buildScripts(readJson(join(capture, 'scripts.json'), {})),
   };
@@ -348,7 +367,8 @@ function build(capture, out, csvFile) {
     console.error(`skipped redirect ${r.from} (${r.source}): no target; run capture.mjs with --verify-shortlinks to resolve it`);
   }
   console.log(
-    `Baseline: ${counts.routes} routes, ${redirects.length} redirects (${skipped.length} skipped), ${counts.media} media, ` +
+    `Baseline: ${counts.routes} routes, ${redirects.length} redirects (${skipped.length} skipped), ${counts.media} media` +
+      (counts.unreferencedSizes ? ` (${counts.unreferencedSizes} unreferenced ${counts.unreferencedSizes === 1 ? 'size' : 'sizes'} listed, not downloaded)` : '') + ', ' +
       `${counts.forms} forms, ${counts.scripts} script vendors. Wrote ${out} and ${csvFile}.`,
   );
 }

@@ -2,6 +2,18 @@
   "name": "astro-conversion-kit",
   "version": "0.1.0",
   "description": "Agent Skills that convert a live website into a static Astro site, with parity gates.",
+  "keywords": [
+    "wordpress",
+    "astro",
+    "wordpress-to-astro",
+    "static-site",
+    "website-migration",
+    "agent-skills",
+    "claude-code",
+    "codex",
+    "seo",
+    "playwright"
+  ],
   "type": "module",
   "license": "MIT",
   "repository": {

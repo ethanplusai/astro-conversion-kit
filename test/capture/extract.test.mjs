@@ -31,19 +31,43 @@ test('the home page record carries head, body classes and vendors', () => {
   assert.equal(gtm.id, 'GTM-FIXTURE');
   const theme = record.scripts.find((s) => s.src?.includes('reveal.js'));
   assert.equal(theme.vendor, 'other');
+  assert.equal(theme.kind, 'script');
 
   assert.deepEqual(record.styles, [
     { href: `${ORIGIN}/wp-content/themes/fixture/style.css?ver=1.4.2`, inline: false },
     { href: null, inline: true },
     { href: null, inline: true },
-  ], 'the theme stylesheet and two WordPress <style> blocks');
+    { href: null, inline: true },
+  ], 'the theme stylesheet and three WordPress <style> blocks');
   assert.equal(record.shortlink, '/?p=2');
   assert.deepEqual(record.alternates, [{ href: `${ORIGIN}/feed/`, type: 'application/rss+xml', hreflang: null }]);
 });
 
+test('module scripts, modulepreload links and import map URLs are script entries with a kind', () => {
+  const record = extractPage(page('index.html'), `${ORIGIN}/`);
+  const files = record.scripts.filter((s) => s.src && s.kind !== 'script').map((s) => ({ src: s.src, kind: s.kind, inline: s.inline }));
+  assert.deepEqual(files, [
+    { src: `${ORIGIN}/wp-includes/js/script-modules/interactivity/index.min.js?ver=6.6.2`, kind: 'importmap', inline: false },
+    { src: `${ORIGIN}/wp-content/themes/fixture/js/util.js`, kind: 'importmap', inline: false },
+    { src: `${ORIGIN}/wp-content/themes/fixture/js/view.js?ver=1.4.2`, kind: 'module', inline: false },
+    { src: `${ORIGIN}/wp-includes/js/script-modules/a11y/index.min.js?ver=6.6.2`, kind: 'modulepreload', inline: false },
+  ]);
+  const map = record.scripts.find((s) => s.inline && s.kind === 'importmap');
+  assert.equal(map.src, null, 'the import map element itself is an inline entry');
+
+  const odd = extractPage(`<html><head>
+    <script type="importmap">{"imports":{"a":"/a.js","dir/":"/dir/","bad":42}}</script>
+    <script type="importmap">not json</script>
+    <link rel="modulepreload" href="/a.js">
+  </head></html>`, 'https://example.com/x/');
+  assert.deepEqual(odd.scripts.filter((s) => s.src).map((s) => `${s.kind} ${s.src}`), ['importmap https://example.com/a.js'],
+    'a path prefix, a non-string and broken JSON are skipped; one URL is listed once');
+});
+
 test('the lazy image takes data-src and the noscript copy is not counted twice', () => {
   const record = extractPage(page('index.html'), `${ORIGIN}/`);
-  const team = record.images.filter((img) => img.src.includes('/team-'));
+  // The 24px header avatar reuses team-300x200.jpg; the lazy team photo is the other one.
+  const team = record.images.filter((img) => img.src.includes('/team-') && img.width !== 24);
   assert.equal(team.length, 1);
   assert.equal(team[0].lazy, true);
   assert.equal(team[0].src, `${ORIGIN}/wp-content/uploads/2026/01/team-1024x683.jpg`);

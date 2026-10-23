@@ -126,6 +126,26 @@ test('file-size and count limits each give their own reason; non-200 entries do 
   assert.match(plan.reasons.join('\n'), /a\.jpg/);
 });
 
+test('unreferenced sizes are counted apart and named in the output; without them the plan has no such field', async () => {
+  const entries = [
+    { path: '/wp-content/uploads/a.jpg', status: 200, bytes: 2048 },
+    { path: '/wp-content/uploads/a-150x150.jpg', status: null, bytes: null, downloaded: false, reason: 'unreferenced size' },
+    { path: '/wp-content/uploads/a-768x512.jpg', status: null, bytes: null, downloaded: false, reason: 'unreferenced size' },
+  ];
+  const plan = planMedia(entries, { host: 'vercel' });
+  assert.equal(plan.totals.count, 1);
+  assert.equal(plan.unreferencedSizes, 2);
+  assert.equal(planMedia(entries.slice(0, 1), { host: 'vercel' }).unreferencedSizes, undefined);
+
+  const file = join(work, 'media-unreferenced.json');
+  writeFileSync(file, JSON.stringify(entries));
+  const res = await run(PLAN, ['--media', file, '--host', 'vercel', '--out', join(work, 'plan-unreferenced.json')]);
+  assert.equal(res.code, 0, res.stderr);
+  assert.match(res.stdout, /^ {2}2 unreferenced sizes listed, not downloaded; pass --sizes all to the capture if old links may use them$/m);
+  const plain = await run(PLAN, ['--media', fixtureMediaJson, '--host', 'vercel', '--out', join(work, 'plan-plain.json')]);
+  assert.doesNotMatch(plain.stdout, /unreferenced/);
+});
+
 test('--mode live-temporary is written with the no-credentials reason', async () => {
   const out = join(work, 'plan-live.json');
   const res = await run(PLAN, [
@@ -541,7 +561,6 @@ test('the media prefix is never "/": the plan exits 2 listing the top-level pref
     () => mediaPrefix(['/wp-content/uploads/a.jpg', '/images/b.jpg', '/favicon.ico']),
     (err) => /\/images\//.test(err.message) && /\/wp-content\//.test(err.message) && /site root/.test(err.message),
   );
-  assert.equal(mediaPrefix(['/wp-content/uploads/a.jpg', '/wp-content/themes/x/font.woff2']), '/wp-content/');
   const media = join(work, 'media-split.json');
   writeFileSync(
     media,
@@ -555,6 +574,39 @@ test('the media prefix is never "/": the plan exits 2 listing the top-level pref
   assert.equal(res.code, 2);
   assert.match(res.stderr, /\/images\/.*\/wp-content\//);
   assert.ok(!existsSync(out));
+});
+
+test('the media prefix is the longest folder holding 90 % of the bytes, never a theme or plugin folder', async () => {
+  const at = (path, bytes) => ({ path, status: 200, bytes });
+  // Uploads plus the theme's fonts and scripts: /wp-content/ would proxy the theme too.
+  assert.equal(mediaPrefix([at('/wp-content/uploads/a.jpg', 10), at('/wp-content/themes/x/font.woff2', 10)]), '/wp-content/uploads/');
+  assert.equal(mediaPrefix([at('/wp-content/uploads/a.jpg', 10), at('/wp-content/plugins/p/icon.svg', 900)]), '/wp-content/uploads/');
+  // Bytes, not count: 95 small files elsewhere hold under 10 % of the bytes.
+  const small = Array.from({ length: 95 }, (_, i) => at(`/images/icon-${i}.svg`, 1));
+  assert.equal(mediaPrefix([...small, at('/wp-content/uploads/2026/01/a.jpg', 600), at('/wp-content/uploads/2025/05/b.jpg', 400)]), '/wp-content/uploads/');
+  // Count-heavy but byte-light uploads do not win against the folder that holds the bytes.
+  assert.throws(() => mediaPrefix([at('/wp-content/uploads/a.jpg', 500), at('/files/b.pdf', 500)]), /90 %/);
+  // Longest: a deeper folder that still holds 90 % of the bytes is chosen.
+  assert.equal(mediaPrefix([at('/assets/media/big/a.mp4', 800), at('/assets/media/b.jpg', 150), at('/assets/c.jpg', 50)]), '/assets/media/');
+  // Never a WordPress year or month folder: new uploads land in new ones.
+  assert.equal(mediaPrefix([at('/wp-content/uploads/2026/01/a.jpg', 990), at('/wp-content/uploads/2025/01/b.jpg', 10)]), '/wp-content/uploads/');
+  // Without byte counts every file weighs the same.
+  assert.equal(mediaPrefix([at('/wp-content/uploads/a.jpg'), at('/wp-content/themes/t/f.woff2')]), '/wp-content/uploads/');
+
+  // The run's shape: 874 uploads, 45 theme files; the plan lists the theme files as outside.
+  const media = join(work, 'media-wp-theme.json');
+  writeFileSync(media, JSON.stringify([
+    ...Array.from({ length: 874 }, (_, i) => at(`/wp-content/uploads/20${10 + (i % 16)}/0${1 + (i % 9)}/img-${i}.jpg`, 2_000_000)),
+    ...Array.from({ length: 45 }, (_, i) => at(`/wp-content/themes/site/assets/file-${i}.woff2`, 40_000)),
+  ]));
+  const out = join(work, 'plan-wp-theme.json');
+  const res = await run(PLAN, ['--media', media, '--host', 'vercel', '--out', out]);
+  assert.equal(res.code, 0, res.stderr);
+  const plan = JSON.parse(readFileSync(out, 'utf8'));
+  assert.equal(plan.prefix, '/wp-content/uploads/');
+  assert.equal(plan.mode, 'store');
+  assert.ok(plan.reasons.some((r) => /^45 file\(s\) outside the prefix \/wp-content\/uploads\//.test(r)), plan.reasons.join('\n'));
+  assert.match(res.stdout, /45 file\(s\) outside the prefix/);
 });
 
 test('files outside an explicit --prefix are listed in reasons without changing the mode', async () => {

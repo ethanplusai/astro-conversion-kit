@@ -103,6 +103,93 @@ test('assets.mjs skips css manifest entries that were not saved (file: null) and
   }
 });
 
+// Runs assets.mjs on a one-page capture of `header` and returns the logo's index entry and bytes.
+async function pickLogo(site, body) {
+  const dir = tinyCapture(site.origin, `<html><body>${body}</body></html>`, '');
+  try {
+    const result = await run(['--capture', dir, '--delay', '0']);
+    assert.equal(result.code, 0, result.stderr);
+    const logo = JSON.parse(readFileSync(join(dir, 'assets/index.json'), 'utf8')).find((e) => e.kind === 'logo');
+    return { ...logo, bytes: logo.file ? readFileSync(join(dir, logo.file), 'utf8') : null };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('assets.mjs prefers an image named logo, then an inline logo <svg>, then the home link image, over the first <img>', async () => {
+  const svg = { headers: { 'Content-Type': 'image/svg+xml' } };
+  const site = await startStub({
+    '/theme/avatar-placeholder.svg': { ...svg, body: '<svg>avatar</svg>' },
+    '/theme/sxsw-logo.svg': { ...svg, body: '<svg>logo</svg>' },
+    '/theme/brand.svg': { ...svg, body: '<svg>brand</svg>' },
+    '/theme/mark.svg': { ...svg, body: '<svg>mark</svg>' },
+  });
+  const avatar = '<div class="account"><img src="/theme/avatar-placeholder.svg" alt=""></div>';
+  try {
+    const named = await pickLogo(site, `<header>${avatar}<a href="/"><img src="/theme/sxsw-logo.svg" alt="SXSW"></a></header>`);
+    assert.equal(named.url, `${site.origin}/theme/sxsw-logo.svg`);
+    assert.equal(named.bytes, '<svg>logo</svg>');
+
+    const byAlt = await pickLogo(site, `<header>${avatar}<img src="/theme/brand.svg" alt="Brand logo"></header>`);
+    assert.equal(byAlt.url, `${site.origin}/theme/brand.svg`);
+
+    const scoped = await pickLogo(site, `${avatar}<div id="site-logo-wrap"><img src="/theme/mark.svg" class="custom-logo"></div>`);
+    assert.equal(scoped.url, `${site.origin}/theme/mark.svg`, 'a [id*=logo] element is searched too');
+
+    const inline = await pickLogo(site, `<header>${avatar}<a href="/"><svg viewBox="0 0 10 10" aria-label="Site logo"><path d="M0 0h10v10z"/></svg></a></header>`);
+    assert.equal(inline.url, null);
+    assert.equal(inline.file, 'assets/logo.svg');
+    assert.equal(inline.status, 200);
+    assert.match(inline.note, /inline <svg>/);
+    assert.equal(inline.bytes, '<svg viewBox="0 0 10 10" aria-label="Site logo" xmlns="http://www.w3.org/2000/svg"><path d="M0 0h10v10z"></path></svg>\n');
+
+    const titled = await pickLogo(site, `<header>${avatar}<svg class="mark"><title>Logo</title><circle r="1"/></svg></header>`);
+    assert.equal(titled.file, 'assets/logo.svg');
+    assert.match(titled.bytes, /<title>Logo<\/title>/);
+
+    const home = await pickLogo(site, `<header>${avatar}<a href="${site.origin}/"><img src="/theme/brand.svg"></a></header>`);
+    assert.equal(home.url, `${site.origin}/theme/brand.svg`, 'the image in the home link');
+
+    const first = await pickLogo(site, `<header>${avatar}<img src="/theme/brand.svg"></header>`);
+    assert.equal(first.url, `${site.origin}/theme/avatar-placeholder.svg`, 'with no other clue, the first <img> as before');
+  } finally {
+    await site.close();
+  }
+});
+
+test('assets.mjs ranks the header before other logo elements, does not read "logout" as a logo, and notes a <use>-only svg', async () => {
+  const img = { headers: { 'Content-Type': 'image/png' } };
+  const site = await startStub({
+    '/uploads/brand.png': { ...img, body: 'brand' },
+    '/uploads/acme-logo.png': { ...img, body: 'acme' },
+    '/uploads/footer-logo-white.png': { ...img, body: 'white' },
+    '/theme/logout-icon.svg': { headers: { 'Content-Type': 'image/svg+xml' }, body: '<svg>out</svg>' },
+    '/theme/site-logo.svg': { headers: { 'Content-Type': 'image/svg+xml' }, body: '<svg>logo</svg>' },
+  });
+  try {
+    const footer = '<footer><div class="sponsor-logos"><img src="/uploads/acme-logo.png" alt="Acme logo"></div><div class="footer-logo"><img src="/uploads/footer-logo-white.png"></div></footer>';
+    const header = await pickLogo(site, `<header><a href="/"><img src="/uploads/brand.png" alt="SXSW"></a></header><main></main>${footer}`);
+    assert.equal(header.url, `${site.origin}/uploads/brand.png`, 'the header brand image beats footer logos');
+
+    const outside = await pickLogo(site, `<header><nav>menu</nav></header>${footer}`);
+    assert.equal(outside.url, `${site.origin}/uploads/acme-logo.png`, 'with no header image, other logo elements are searched');
+
+    const logout = await pickLogo(site, '<header><a class="menu-logout" href="/logout"><img src="/theme/logout-icon.svg" class="logout"></a><img src="/theme/site-logo.svg"></header>');
+    assert.equal(logout.url, `${site.origin}/theme/site-logo.svg`);
+
+    const camel = await pickLogo(site, '<header><img src="/uploads/brand.png" alt="avatar"><img src="/theme/site-logo.svg" class="headerLogo"></header>');
+    assert.equal(camel.url, `${site.origin}/theme/site-logo.svg`, 'a camelCase class names the logo');
+
+    const used = await pickLogo(site, '<svg style="display:none"><symbol id="brand"><path d="M0 0"/></symbol></svg><header><svg class="logo"><use href="#brand"/></svg></header>');
+    assert.equal(used.file, 'assets/logo.svg');
+    assert.match(used.note, /uses a symbol defined elsewhere on the page/);
+    const drawn = await pickLogo(site, '<header><svg class="logo"><path d="M0 0"/></svg></header>');
+    assert.doesNotMatch(drawn.note, /symbol/);
+  } finally {
+    await site.close();
+  }
+});
+
 test('assets.mjs saves the web manifest, and the root icons meta.json icons saw answer 200', async () => {
   const site = await startStub({
     '/site.webmanifest': { headers: { 'Content-Type': 'application/manifest+json' }, body: '{"name":"x"}' },

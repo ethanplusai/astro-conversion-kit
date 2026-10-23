@@ -379,6 +379,36 @@ test('predecessor.coverage blocks when live had a sitemap, and for any other row
   assert.equal((await reconcileAt([leftover], noSitemapSite('leftover'))).code, 1);
 });
 
+test('output.robots-txt is accepted when every off-host Sitemap: line is one the live robots.txt carried verbatim', async () => {
+  const live = join(root, 'robots-capture');
+  cpSync(capture, live, { recursive: true });
+  writeFileSync(join(live, 'robots.txt'), 'User-agent: *\nSitemap: https://www.fixture-roofing.test/sitemap_index.xml\nSitemap: https://sister.example.com/sitemap_index.xml\n');
+  const site = join(root, 'robots-site');
+  mkdirSync(join(site, 'dist'), { recursive: true });
+  const build = (lines) => writeFileSync(join(site, 'dist', 'robots.txt'), `User-agent: *\nAllow: /\n\n${lines.map((l) => `Sitemap: ${l}\n`).join('')}`);
+  const check = (...rows) => failing('output.robots-txt', rows.join('; '), rows, 'text');
+  const at = (checks) => run(['--findings', gateFile(checks), '--baseline', baseline, '--plan', bare, '--capture', live, '--dir', site, '--json']);
+  const sister = 'the Sitemap: line points at sister.example.com, not www.fixture-roofing.test';
+
+  build(['https://www.fixture-roofing.test/sitemap-index.xml', 'https://sister.example.com/sitemap_index.xml']);
+  const ok = await at([check(sister)]);
+  assert.equal(ok.code, 0, ok.stdout + ok.stderr);
+  assert.deepEqual(parsed(ok).accepted.map((a) => `${a.id} ${a.rule}`), ['output.robots-txt live-robots']);
+
+  build(['https://www.fixture-roofing.test/sitemap-index.xml', 'https://sister.example.com/other-sitemap.xml']);
+  const changed = await at([check(sister)]);
+  assert.equal(changed.code, 1, 'a line live did not carry verbatim blocks');
+  assert.match(parsed(changed).blocking[0].rows[0].reason, /other-sitemap\.xml.*not in the live robots\.txt/);
+
+  build(['https://staging.example.com/sitemap-index.xml']);
+  const staging = await at([check('the Sitemap: line points at staging.example.com, not www.fixture-roofing.test')]);
+  assert.equal(staging.code, 1, 'a host live never named blocks');
+
+  build(['https://sister.example.com/sitemap_index.xml']);
+  const blocked = await at([check(sister, 'robots.txt contains "Disallow: /", which blocks the whole site')]);
+  assert.equal(blocked.code, 1, 'any other robots.txt problem still blocks');
+});
+
 test('usage errors exit 2', async () => {
   assert.equal((await run(['--findings', 'nope.json', '--baseline', baseline])).code, 2);
   assert.equal((await run(['--findings', join(root, 'missing.json'), '--baseline', baseline, '--plan', plan])).code, 2);

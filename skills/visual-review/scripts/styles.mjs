@@ -11,7 +11,7 @@ import { readRoutes, RoutesError } from './lib/routes.mjs';
 import { LENGTH_TOLERANCE_PX, PROPERTIES, SELECTORS } from './lib/selectors.mjs';
 
 const HELP = `Usage: node styles.mjs --live <origin> --new <origin> --routes <templates.json|list>
-                        [--widths 390,1440] [--out styles.json] [--delay 2500]
+                        [--widths 390,1440] [--out styles.json] [--delay 500]
                         [--allow-analytics]
 
 Opens every route at every width on both origins and compares, on the first
@@ -27,7 +27,7 @@ Lengths pass within ${LENGTH_TOLERANCE_PX} px; colours and families must match e
              the same route names shoot.mjs gives its folders
   --widths   viewport widths, comma separated (default 390,1440)
   --out      where to write [{ route, path, width, selector, property, live, new, pass }]
-  --delay    milliseconds between page loads (default 2500)
+  --delay    milliseconds between page loads (default 500)
   --allow-analytics  let analytics, tag, pixel and chat hosts load on both
              origins (blocked by default)
 
@@ -164,7 +164,7 @@ function options(argv) {
         routes: { type: 'string' },
         widths: { type: 'string', default: '390,1440' },
         out: { type: 'string', default: 'styles.json' },
-        delay: { type: 'string', default: '2500' },
+        delay: { type: 'string', default: '500' },
         'allow-analytics': { type: 'boolean', default: false },
         help: { type: 'boolean', short: 'h' },
       },

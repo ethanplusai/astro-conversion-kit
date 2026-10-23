@@ -4,7 +4,7 @@
 // needs an account (a GitHub repo, a Vercel deploy) the stand-ins are named at the function.
 // Scripts run as child processes so the in-process fixture keeps answering.
 import { execFile } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
 import {
@@ -433,9 +433,7 @@ export async function mediaAndCss({ site }) {
     cpSync(join(site, 'capture', 'js', entry.file), join(site, 'public', decodeURIComponent(new URL(entry.src).pathname).replace(/^\//, '')));
   }
   const prune = await node(site, kit('convert-site', 'css-prune.mjs'), ['--css', 'capture/css', '--coverage', 'capture/css-coverage.json', '--out', 'src/styles/site.css', '--report', '.conversion/css-prune-report.json']);
-  const layout = join(site, 'src', 'layouts', 'Base.astro');
-  const source = readFileSync(layout, 'utf8');
-  writeFileSync(layout, source.replace("import { INDEXABLE } from '../lib/site.mjs';", "import { INDEXABLE } from '../lib/site.mjs';\nimport '../styles/site.css';"));
+  // Base.astro links src/styles/site.css itself (before the head slot), so nothing is added here.
   return { prune };
 }
 
@@ -538,7 +536,7 @@ const html = ${js(cut.content)};
 ---
 <Other head={{ title: ${js(record.title)}, description: ${js(record.description ?? undefined)}, robots: 'noindex' }} bodyClass=${js(cut.bodyClass)}><Fragment set:html={html} /></Other>
 `);
-  // robots.txt: the captured file is the indexable body.
+  // robots.txt: the captured file is the indexable body, its sister-site Sitemap: line included.
   const robots = join(site, 'src', 'pages', 'robots.txt.js');
   writeFileSync(robots, readFileSync(robots, 'utf8')
     .replace("import { INDEXABLE, ORIGIN } from '../lib/site.mjs';", "import { readFileSync } from 'node:fs';\nimport { join } from 'node:path';\nimport { INDEXABLE } from '../lib/site.mjs';")
@@ -620,7 +618,7 @@ export async function build({ site, live }) {
   const redirects = expectCode(await npm(site, ['run', 'redirects:build']));
   expectCode(await npm(site, ['run', 'build']));
   const templateGates = await scopedGates(site, P);
-  const preview = await astroPreview(site);
+  const preview = await reviewServe(site);
   let lock;
   try {
     lock = await templateReview(site, live, preview.origin);
@@ -658,7 +656,7 @@ export async function gates({ site }) {
 
 export async function visual({ site, live }) {
   await S(site, 'phase', 'visual');
-  const preview = await astroPreview(site);
+  const preview = await reviewServe(site);
   try {
     const run = (script, args) => npm(site, ['run', `review:${script}`, '--', ...args]);
     // The template-set rerun and the two full shoots write apart: run together.
@@ -793,35 +791,13 @@ function freePort() {
   });
 }
 
-// npm run preview on a free port, which backgrounds the Astro preview server (as Astro 7 does
-// with no terminal). Ready only when it serves a sentinel file written into this run's dist/, so
-// another run's server or a leftover one is never shot. close() runs astro preview stop.
-export async function astroPreview(site) {
+// npm run review:serve on a free port in the background, as phases.md's "Serve, then wait" does:
+// it returns once the server answers this site's dist/, and exits 2 when another process holds the
+// port, so another run's server or a leftover one is never shot. close() runs review:serve --stop.
+export async function reviewServe(site) {
   const port = await freePort();
-  const token = randomUUID();
-  const sentinel = `e2e-preview-${process.pid}.txt`;
-  writeFileSync(join(site, 'dist', sentinel), token);
-  const started = expectCode(await npm(site, ['run', 'preview', '--', '--background', '--port', String(port), '--host', '127.0.0.1']));
-  const origin = `http://127.0.0.1:${port}`;
-  const close = async () => {
-    rmSync(join(site, 'dist', sentinel), { force: true });
-    return sh('npx', ['astro', 'preview', 'stop'], { cwd: site });
-  };
-  const deadline = Date.now() + 60_000;
-  for (;;) {
-    try {
-      const res = await fetch(`${origin}/${sentinel}`);
-      const body = await res.text();
-      if (res.ok && body === token) return { origin, close };
-    } catch {
-      // not listening yet
-    }
-    if (Date.now() > deadline) {
-      await close();
-      throw new Error(`astro preview did not answer within 60 s\n${started.stdout}${started.stderr}`);
-    }
-    await new Promise((r) => setTimeout(r, 200));
-  }
+  expectCode(await npm(site, ['run', 'review:serve', '--', '--background', '--port', String(port)]));
+  return { origin: `http://localhost:${port}`, close: () => npm(site, ['run', 'review:serve', '--', '--stop']) };
 }
 
 const TYPES = {

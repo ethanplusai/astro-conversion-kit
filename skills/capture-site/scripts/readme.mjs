@@ -112,12 +112,16 @@ function redirectsSection(redirects) {
 function mediaSection(media) {
   const lines = ['## Media', ''];
   if (!media) return [...lines, 'Media: not captured (no media.json; run the media step)'];
-  const ok = media.filter((m) => m.status === 200);
+  // A size only the REST media list names is listed, never fetched (media.mjs --sizes referenced).
+  const listedOnly = media.filter((m) => m.downloaded === false);
+  const checked = media.filter((m) => m.downloaded !== false);
+  const ok = checked.filter((m) => m.status === 200);
   const total = ok.reduce((sum, m) => sum + (m.bytes ?? 0), 0);
-  lines.push(`- Media files: ${media.length}, ${formatBytes(total)} answering 200`);
+  lines.push(`- Media files: ${checked.length}, ${formatBytes(total)} answering 200`);
+  if (listedOnly.length) lines.push(`- Unreferenced sizes: ${listedOnly.length} (listed only, not downloaded; media.mjs --sizes all fetches them)`);
   const largest = ok.reduce((big, m) => ((m.bytes ?? 0) > (big?.bytes ?? -1) ? m : big), null);
   if (largest) lines.push(`- Largest: ${largest.path ?? largest.url} (${formatBytes(largest.bytes ?? 0)})`);
-  const broken = media.filter((m) => m.status !== 200);
+  const broken = checked.filter((m) => m.status !== 200);
   if (broken.length) lines.push(`- Not 200: ${broken.length} (${someOf(broken.map((m) => `${m.path ?? m.url} ${m.status}`))})`);
   return lines;
 }

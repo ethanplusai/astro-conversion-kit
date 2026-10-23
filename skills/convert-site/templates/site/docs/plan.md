@@ -15,11 +15,13 @@ Live site: {{ORIGIN}}. Host: {{HOSTING}}. Started {{DATE}}.
 | Indexable pages | |
 | Noindex pages | |
 | Media files (total size) | |
+| Unreferenced sizes (listed, not downloaded) | |
 | Redirects | |
 
 ## Media decision
 
-In the repository, or on external storage (and why).
+In the repository, or on external storage (and why). N unreferenced sizes listed, not
+downloaded; pass --sizes all to the capture if old links may use them.
 
 ## Redirects source
 

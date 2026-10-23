@@ -20,23 +20,36 @@ Step 2 of a conversion (`convert-site` runs it), or any time a live site has to 
 
 ## Pacing
 
-Every script waits **2500 ms between requests** by default and sends a desktop Chrome user agent.
-Keep the default `--delay` against a live site (`--delay 0` is for local fixtures only), and never
-change `--ua` to get past a block.
+Every script sends a desktop Chrome user agent. The capture scripts (`capture`, `media`,
+`assets`, `fingerprint`) share a per-host limiter: by default request starts are **400 ms apart
+with up to 4 in flight** (`media`: 6), so a host that answers quickly is read in minutes. The
+Chromium steps (`shoot`, `css-coverage`, `styles`) load one page at a time, 500 ms apart, and `launch-audit` and `pre-launch` keep their own pacing. The limiter adapts by itself:
 
-- `capture` doubles its wait after a 429 or 503 (up to 32 times) and tries each URL 3 times. A
+- a 429 or 503 doubles that host's delay (up to 32 times) and drops it to **one request at a
+  time**; after every 30 s of clean answers it recovers one step (half the delay, one more in
+  flight) until it is back to the defaults;
+- an answer that takes more than 5 s halves the requests in flight on that host (not again while
+  halved), and it recovers the same way, one more in flight per 30 s of clean answers;
+- a 403 or a network error counts towards the 3-in-a-row stop below, as before.
+
+`--polite` is the old pace: one request at a time, 2500 ms apart (`capture`, `media`, `assets`).
+Use it from the start on shared hosting with a bot wall (SiteGround's `/.well-known/sgcaptcha/`,
+hosts that answer 429 or 503 to a few quick requests), or when a run stopped on blocks: resume
+with `--polite`. `--delay <ms>` and `--concurrency <n>` override the defaults or `--polite`. Keep
+the defaults or `--polite` against a live site (`--delay 0` is for local fixtures only), and
+never change `--ua` to get past a block.
+
+- `capture` fetches up to `--concurrency` queued URLs ahead and records them in queue order, so
+  the capture is the same as a one-at-a-time crawl. It tries each URL 3 times. A
   URL still blocked after that (403, 429, 503 or a network error) is recorded with its status and
   `attempts` in `inventory.json` (a sitemap or REST list in `meta.json` `discoveryErrors`) and
   the crawl moves on. It stops only after **3 different URLs in a row used up their tries**
   with no success between them, state saved, those three queued again with fresh tries.
   It never requests `wp-admin`, `wp-login`, `xmlrpc.php` or `?s=` searches.
 - `media` tries each file 3 times: a persistent 429 or 503 stops it at once; a 403 or network
-  error is recorded as that file's status, and 3 such files in a row stop it. It saves
-  `media.json` every 100 files, so a stopped run resumes close to where it was.
-  `--concurrency <n>` (default 1, at most 32) keeps up to n files in flight; `--delay` still
-  spaces the request starts, so a higher value goes with a shorter `--delay` (for example
-  `--concurrency 8 --delay 100` for a media library of tens of thousands of files). Raise it only
-  with the site owner's consent, and drop back to the default if the site starts answering 429.
+  error is recorded as that file's status, and 3 such files in a row (in the order the answers
+  arrive) stop it. Files already downloading when it stops are let finish. It saves
+  `media.json` every 100 files, so a run that is killed resumes close to where it was.
 - `fingerprint` does not retry: a blocked home page, or one that is a bot challenge, is exit 3. `assets` and `shoot` back off and
   stop after 3 blocked responses in a row.
 
@@ -56,14 +69,19 @@ source. Run each step as its own command, in this order:
    REST; `--no-rest` skips), the link crawl, and `--seed <path>` or `--seed-file <file>` (one
    path or URL per line, `#` comments) for paths the crawl cannot reach (old URLs, an old
    `.htaccess`). After the crawl, Wayback paths it did not find go to `wayback-unverified.txt`
-   (`--no-wayback` skips). `?p=` shortlinks are recorded unverified and never fetched unless you
+   (`--no-wayback` skips; a listing that fails is asked for once more 10 s later before
+   `meta.json` `wayback` records `failed`). `?p=` shortlinks are recorded unverified and never fetched unless you
    pass `--verify-shortlinks`. After the crawl it requests one path that cannot exist
    (`/<32 hex>/`) once, so the site's own 404 page is saved as `pages/404.html` (`meta.json`
    `notFound`; a site that answers 200 or redirects there is recorded with no page), and asks
    for `/favicon.ico` and `/apple-touch-icon.png` once each (`meta.json` `icons`: path to
    status). URLs are keyed with upper-case percent escapes (`%c3%a9` and `%C3%A9` are one URL),
    so a page linked with both spellings is captured once. A sitemap robots.txt names that answers 404 (or any non-200) is listed in
-   `sitemaps/index.json` with its status and in `meta.json` `discoveryErrors`.
+   `sitemaps/index.json` with its status and in `meta.json` `discoveryErrors`. A sitemap on
+   another host (robots.txt naming a sister site's, or an index listing one; www and apex count
+   as one host) is listed there as `{ url, host, skipped: "other host" }` and never fetched, so
+   none of its URLs enter the crawl. Two sitemap URLs with the same file name never overwrite
+   each other: the second is saved with a suffix from its directory path (`page-sitemap-es.xml`).
 
        node <skill-dir>/scripts/capture.mjs https://www.example.com --out capture
 
@@ -80,6 +98,15 @@ source. Run each step as its own command, in this order:
 
        node <skill-dir>/scripts/media.mjs --capture capture --download .conversion/media-cache
 
+   It downloads six files at a time. By default (`--sizes referenced`) it fetches the originals
+   and every size the site uses: one a page, stylesheet, srcset, og tag or sitemap points at, or
+   whose file name appears anywhere in the captured pages, stylesheets or scripts (data-thumb,
+   data-bg, JSON settings, slider scripts). A WordPress size only the REST media list names is
+   listed with `downloaded: false, reason: "unreferenced size"` and not requested. It prints the
+   split, e.g. `920 originals + referenced sizes (downloaded), 4,520 unreferenced sizes (listed
+   only)`: repeat that line to the person. Use `--sizes all` when the owner says old
+   emails or other sites may link to those sizes.
+
 4. **Templates.** Clusters the pages that answered 200 into `capture/templates.json`. On
    WordPress, pages group by template body class first (`home`, `page`, `single-post`,
    `archive`, template classes) and a page whose markup is clearly different (Jaccard below 0.5)
@@ -93,6 +120,18 @@ source. Run each step as its own command, in this order:
    recorded them at 200:
 
        node <skill-dir>/scripts/assets.mjs --capture capture
+
+   The logo is looked for on the home page inside the `<header>` first, then inside any other
+   element whose class or id names a logo (`.logo`, `.site-logo`, `#logo-wrap`). In each: an
+   `<img>` whose src, alt, class or id has the word "logo" (not "logout"), then an inline `<svg>`
+   with "logo" in its class, id, aria-label or `<title>` (saved as `logo.svg`, `url: null` in
+   `assets/index.json`; its note says so when it only `<use>`s a symbol defined elsewhere on the
+   page, which renders empty on its own), then the first `<img>` in a link to the home page, then
+   the first `<img>`. Check `assets/logo.*` by eye: an account
+   avatar or a sponsor mark can still win on an unusual header. The favicon and
+   apple-touch-icon are saved as served from their `<link>` href, query string included, so
+   one that points at a resize (`?w=32`, `?w=180`) of an uploads file differs in bytes from
+   that file's entry in `media.json`: keep the saved icon, not the original.
 
 6. **Live screenshots**, one per template at 390, 768 and 1440, with the visual-review shooter:
 
@@ -133,6 +172,10 @@ The site is blocking requests or cannot be reached. Wait (minutes, not seconds),
   with their status, so URLs that are down for good stop the capture once, not on every resume.
   After two stops on the same URLs, tell the person which ones (paths and status) and carry on.
 - `media`, `assets`: run the same command again; work already done is kept.
+- After a stop, up to concurrency − 1 URLs may have been requested but not recorded;
+  `--resume` asks them again.
+- If it stopped at the default pace, add `--polite` to the resumed command (and to the later
+  steps on that site): the host wants one request at a time.
 - `shoot`: rerun with a longer `--delay`.
 
 Never retry in a tight loop. After two stops in a row, tell the person and carry on with the rest.
@@ -179,15 +222,19 @@ redirects to a captcha path. Every page then looks the same, so a capture of it 
     redirects.json        every redirect, chains collapsed, hops kept; shortlinks marked verified or not
     links.json            internal and external links, with the pages that carry them
     scripts.json          third-party vendors with their ids and pages
-    media.json            every media file with sources, pages, status, type and bytes
+    media.json            every media file with sources, pages, status, type and bytes; a size
+                          only the REST list names: downloaded: false, "unreferenced size"
     css/                  every stylesheet, inline <style> blocks, manifest.json; the sheets a
                           stylesheet @imports (any host, 5 levels deep) too, their manifest
                           entries with importedBy: [importer hrefs] and the importer's pages;
                           one deeper still is listed with status "too-deep", not fetched;
                           a redirected sheet records finalUrl (its url()s and @imports
                           resolve against it)
-    js/                   the site's own <script src> files (theme JavaScript) and manifest.json:
-                          [{ file, src, pages }], or { file: null, src, pages, status } for a file
+    js/                   the site's own script files (theme JavaScript, <script type=module src>,
+                          every URL its <script type=importmap> imports or scopes name, and
+                          <link rel=modulepreload> files) and manifest.json: [{ file, src, kind,
+                          pages }] (kind "script", "module", "importmap" or "modulepreload"),
+                          or { file: null, src, kind, pages, status } for a file
                           not saved (an HTTP status, "off-site" for a redirect off the host,
                           "too-large" over 5 MB); [] when the site has none
     templates.json        template clusters with a representative page each
@@ -196,7 +243,8 @@ redirects to a captcha path. Every page then looks the same, so a capture of it 
     lighthouse-live/      Lighthouse reports, when run (gitignored)
     pages/404.html        the site's own 404 page (meta.json notFound: path, status, snapshot, text)
     sitemaps/             every sitemap robots.txt names, the default index, and their children;
-                          index.json: every sitemap URL asked for { url, status, file }
+                          index.json: every sitemap URL asked for { url, status, file }, and
+                          { url, host, skipped: "other host" } for one on another host
     feeds/ robots.txt wp-rest/ wayback-unverified.txt meta.json state.json
     README.md             the generated summary and its ## Notes
 

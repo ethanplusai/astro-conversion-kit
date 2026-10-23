@@ -30,9 +30,10 @@ Typical run-specific lines (keep the ones that apply):
 - "create the store, upload, regenerate rewrites; live-temporary must be gone before DNS moves"
   with the commands from the host file;
 - Cloudflare: create one Single Redirect per row of `cloudflare-query-redirects.csv` (n rows);
-- Vercel: create the Protection Bypass for Automation secret (Settings, Deployment Protection)
-  and put it in the environment as `VERCEL_AUTOMATION_BYPASS_SECRET` so `verify-live` can be
-  rerun, or accept the "Not covered" gap;
+- Vercel, only when the owner opted in to protecting staging: create the Protection Bypass for
+  Automation secret (Settings, Deployment Protection) and put it in the environment as
+  `VERCEL_AUTOMATION_BYPASS_SECRET` so `verify-live` can be rerun, or accept the "Not covered"
+  gap;
 - push the repo and open the PR (when `gh` was not logged in);
 - sign off every entry in `exceptions.json`; approve or decline every proposal id (an approved
   proposal's records move to `exceptions.json` with the approver's name);
@@ -48,6 +49,11 @@ Typical run-specific lines (keep the ones that apply):
       looser threshold is a `docs/visual-overrides.json` entry with its decision id, at most 2 %.
 - [ ] `npm run redirects:build` output committed.
 - [ ] Staging: `<staging url>`, noindexed (`npm run verify:live -- --base <staging url> --expect-noindex`).
+      Vercel with the default public staging: every staging redeploy is
+      `npx vercel deploy --prod --yes --scope <team slug>` from `astro-rebuild`, until launch;
+      before the domain is attached (launch day, from `main`) the production alias
+      `<project>.vercel.app` is staging. With protection opted in, redeploys stay
+      `npx vercel deploy --yes --scope <team slug>` previews.
 - [ ] The one test submission sent to the intake address (date), receipt confirmed by the person.
 - [ ] `docs/suggestions.md` read; the items wanted are picked for `--apply` after launch.
 - [ ] The PR reviewed and merged by the person.
@@ -69,10 +75,11 @@ Typical run-specific lines (keep the ones that apply):
    `PUBLIC_INDEXABLE=true` in these commands sets it for that one local command only, never
    the host; the host's switch is step 6.
 6. Set the switch for production (Vercel: `npx vercel env add PUBLIC_INDEXABLE production`,
-   value `true`; Cloudflare: it is on the local build). Vercel, when staging was
-   protected (`publicStaging` `false`): restore the default protection, previews only, so the
-   production alias and the domain answer the public: write `{"ssoProtection":{"deploymentType":"preview"}}`
-   to a file outside the repository, run
+   value `true`; Cloudflare: it is on the local build). With the default public staging there
+   is no protection step: go straight to the production deploy. Vercel, only when the owner
+   opted in to protecting staging (`publicStaging` `false`): restore the default protection,
+   previews only, so the production alias and the domain answer the public: write
+   `{"ssoProtection":{"deploymentType":"preview"}}` to a file outside the repository, run
    `npx vercel api /v9/projects/<project> --method PATCH --input <that file> --scope <team slug>`,
    and check `npx vercel api /v9/projects/<project> --scope <team slug>` shows `"preview"`.
    Then deploy production (`npx vercel deploy --prod --scope <team slug>`, or the wrangler

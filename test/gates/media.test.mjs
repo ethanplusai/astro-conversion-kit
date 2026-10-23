@@ -190,3 +190,20 @@ test('usage and missing inputs exit 2; --help exits 0', async () => {
   assert.match(help.stdout, /--media-plan/);
   assert.match(help.stdout, /--media-manifest/);
 });
+
+test('a file with downloaded: false (an unreferenced size) is skipped and counted, never a failure', async () => {
+  const listed = join(root, 'baseline-listed');
+  cpSync(baseline, listed, { recursive: true });
+  const extra = { path: `${UPLOADS}2026/01/hero-150x150.jpg`, bytes: null, contentType: null, referencedBy: [], downloaded: false, reason: 'unreferenced size' };
+  writeFileSync(join(listed, 'media.json'), JSON.stringify([...media, extra]));
+  const run = (args = []) => runGate('media', ['--dist', good, '--baseline', listed, ...args], { cwd: root, env: { PUBLIC_INDEXABLE: '' } });
+  const result = await run();
+  assert.equal(result.code, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^ {2}skipped: 1 unreferenced size \(listed in media\.json, not downloaded\)$/m);
+  assert.match(result.stdout, new RegExp(`^media: ${media.length} checked, 0 failed, 1 skipped \\(unreferenced size\\)$`, 'm'));
+  const plain = await gate(good);
+  assert.doesNotMatch(plain.stdout, /unreferenced/);
+  const json = JSON.parse((await run(['--json'])).stdout);
+  assert.equal(json.skipped, 1);
+  assert.equal(json.failed, 0);
+});

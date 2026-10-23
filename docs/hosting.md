@@ -68,19 +68,26 @@ Its value does not start with `vercel_blob_rw_`, so nothing should rely on that 
 or redact it. `npx vercel env run -- <command>` reads the command's flags as its own, so the
 uploader runs through a flagless wrapper script under it.
 
-**Deployment protection.** Vercel's default protection covers previews and deployment URLs but
-not the production alias `<name>.vercel.app`, and the first deploy of a new project goes there.
-So the intake asks whether staging may be public before launch. No (the default): before the
-first deploy the project is set to protect every deployment
+**Deployment protection.** Staging is public and noindexed by default. Vercel's default
+Deployment Protection covers preview deployments and raw deployment URLs but leaves the
+production alias `<name>.vercel.app` public, and the first deploy of a new project goes there,
+so that alias is the staging URL: anyone with the link can open it, every page carries
+`noindex, nofollow` and robots.txt blocks everything, and the link is meant to be shared with
+reviewers. No protection setting is changed; every staging redeploy is
+`npx vercel deploy --prod` from the conversion branch, because until the custom domain is
+attached on launch day the production alias is staging. `verify-live` and `launch-audit` run
+against the alias (taken from the deploy JSON's `deployment.productionUrl`, confirmed with one GET that
+answers 200 with the noindex) (the raw `*-<hash>.vercel.app` deployment URL stays protected, and a script pointed at
+it gets a 302 to `vercel.com/sso-api`, which `verify-live` reports as deployment protection,
+exit 3). Protection is opt-in: when the owner asks for staging behind Vercel Authentication,
+the project is set to protect every deployment before its first deploy
 (`npx vercel api /v9/projects/<name> --method PATCH --input <file> --scope <team slug>` with
 `{"ssoProtection":{"deploymentType":"all"}}`, checked with a GET), and launch day restores the
-default (`"deploymentType":"preview"`). Yes: the same PATCH with `{"ssoProtection":null}` turns
-Vercel Authentication off; pages stay noindexed. A protected deployment answers scripts with a
-302 to `vercel.com/sso-api`, which `verify-live` reports as deployment protection (exit 3).
-Vercel's Protection Bypass for Automation lets it through with a secret header, but a new
-project has no secret until someone creates one in the dashboard, and `launch-audit` cannot send
-the header yet; until then the staging checks appear under "Not covered". Keep previews of sites
-you do not own the content of protected.
+default (`"deploymentType":"preview"`). The cost is the bypass secret: Vercel's Protection
+Bypass for Automation lets scripts through with a secret header, but a new project has no
+secret until someone creates one in the dashboard, and `launch-audit` cannot send the header
+yet; until then the staging checks appear under "Not covered". Opt in for sites whose content
+must not be seen before launch.
 
 ## Cloudflare Pages
 

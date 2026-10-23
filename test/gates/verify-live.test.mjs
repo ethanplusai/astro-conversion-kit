@@ -2,7 +2,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -198,6 +198,19 @@ test('with --expect-noindex, a meta robots noindex on the page stands in for the
   assert.match(plain.stdout, /^ {2}FAIL route \/about\/ x-robots-tag: expected "noindex \(header or meta robots\)", got null$/m);
 });
 
+test('a baseline media entry with downloaded: false is never sampled (the build does not serve it)', async () => {
+  const listed = join(root, 'baseline-listed');
+  cpSync(baseline, listed, { recursive: true });
+  const media = JSON.parse(readFileSync(join(baseline, 'media.json'), 'utf8'));
+  const extra = { path: '/wp-content/uploads/2026/01/hero-150x150.jpg', bytes: null, contentType: null, referencedBy: [], downloaded: false, reason: 'unreferenced size' };
+  writeFileSync(join(listed, 'media.json'), JSON.stringify([...media, extra]));
+  const host = await serve(good);
+  const result = await verifyLive(['--base', host.origin, '--baseline', listed, '--delay', '0']);
+  assert.equal(result.code, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /^verify-live: 51 checked, 0 failed$/m);
+  assert.doesNotMatch(result.stdout, /hero-150x150\.jpg (?!skipped)/);
+});
+
 test('a media file whose size changed fails', async () => {
   const dist = makeDist(join(root, 'dist-media'));
   writeFileSync(join(dist, 'wp-content/uploads/2026/01/logo.svg'), '<svg/>');
@@ -332,7 +345,12 @@ test('a 302 to vercel.com/sso-api stops the run at the first answer with exit 3,
   assert.equal(host.headers.length, 1);
   assert.doesNotMatch(result.stdout, /FAIL/);
   assert.match(result.stdout, /^verify-live: 0 checked, 0 failed$/m);
-  assert.match(result.stdout, /^verify-live: deployment protection: \/ answered 302 to https:\/\/vercel\.com\/sso-api; pass --bypass <secret>, or have the person create the bypass secret \(Settings, Deployment Protection, Protection Bypass for Automation\) and run it again$/m);
+  assert.ok(
+    result.stdout.split('\n').includes(
+      `verify-live: deployment protection: ${host.origin}/ redirected to vercel.com/sso-api; use the project's production alias (public by default), or pass --bypass if staging was deliberately protected`,
+    ),
+    result.stdout,
+  );
   const json = JSON.parse((await live(host.origin, ['--json'])).stdout);
   assert.match(json.stopped, /^deployment protection: /);
   assert.equal(json.checked, 0);

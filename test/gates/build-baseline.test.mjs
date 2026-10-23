@@ -203,11 +203,19 @@ test('media, forms, scripts and text', () => {
 
 test('js.json lists the saved same-origin scripts from capture/js/, [] when the capture has none', async (t) => {
   const origin = readJson(baseline, 'meta.json').origin;
-  assert.deepEqual(readJson(baseline, 'js.json'), [{
-    src: `${origin}/wp-content/themes/fixture/js/reveal.js?ver=1.4.2`,
-    file: 'js/1.js',
-    pages: readJson(baseline, 'routes.json').filter((r) => r.status === 200 && ['page', 'post', 'archive'].includes(r.kind)).map((r) => r.path).sort(),
-  }]);
+  const modules = `${origin}/wp-includes/js/script-modules`;
+  const home = (src, n) => ({ src, file: `js/${n}.js`, pages: ['/'] });
+  assert.deepEqual(readJson(baseline, 'js.json'), [
+    home(`${modules}/interactivity/index.min.js?ver=6.6.2`, 1),
+    home(`${origin}/wp-content/themes/fixture/js/util.js`, 2),
+    home(`${origin}/wp-content/themes/fixture/js/view.js?ver=1.4.2`, 3),
+    {
+      src: `${origin}/wp-content/themes/fixture/js/reveal.js?ver=1.4.2`,
+      file: 'js/4.js',
+      pages: readJson(baseline, 'routes.json').filter((r) => r.status === 200 && ['page', 'post', 'archive'].includes(r.kind)).map((r) => r.path).sort(),
+    },
+    home(`${modules}/a11y/index.min.js?ver=6.6.2`, 5),
+  ]);
   const copy = join(root, 'no-js');
   const out = join(root, 'no-js-out', 'baseline');
   t.after(() => {
@@ -223,6 +231,29 @@ test('js.json lists the saved same-origin scripts from capture/js/, [] when the 
 
 test("sitemaps.json lists the live site's sitemap file names the capture saved", () => {
   assert.deepEqual(readJson(baseline, 'sitemaps.json'), ['category-sitemap.xml', 'page-sitemap.xml', 'post-sitemap.xml', 'sitemap_index.xml']);
+});
+
+test('an unreferenced size (downloaded: false) is kept in baseline/media.json with its reason, and counted apart', async (t) => {
+  const listed = join(root, 'capture-listed');
+  const out = join(root, 'baseline-listed');
+  cpSync(capture, listed, { recursive: true });
+  t.after(() => rmSync(listed, { recursive: true, force: true }));
+  const media = readJson(capture, 'media.json');
+  const extra = { url: 'x', path: '/wp-content/uploads/2026/01/hero-150x150.jpg', source: ['rest'], referencedBy: [], status: null, contentType: null, bytes: null, downloaded: false, reason: 'unreferenced size' };
+  writeFileSync(join(listed, 'media.json'), JSON.stringify([...media, extra]));
+  const result = await build(['--capture', listed, '--out', out]);
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /20 media \(1 unreferenced size listed, not downloaded\)/);
+  const baselineMedia = readJson(out, 'media.json');
+  assert.equal(baselineMedia.length, 21);
+  assert.deepEqual(baselineMedia.at(-1), { path: extra.path, bytes: null, contentType: null, referencedBy: [], downloaded: false, reason: 'unreferenced size' });
+  const counts = readJson(out, 'counts.json');
+  assert.equal(counts.media, 20);
+  assert.equal(counts.unreferencedSizes, 1);
+  assert.equal((await build(['--out', out, '--check'])).code, 0, 'the counts check holds');
+  // Without such entries nothing changes: no unreferencedSizes key, no extra fields.
+  assert.equal(readJson(baseline, 'counts.json').unreferencedSizes, undefined);
+  assert.equal(readFileSync(join(baseline, 'media.json'), 'utf8').includes('downloaded'), false);
 });
 
 test('counts.json sums the baseline', () => {

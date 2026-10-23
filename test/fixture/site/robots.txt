@@ -3,3 +3,4 @@ Disallow: /wp-admin/
 Allow: /wp-admin/admin-ajax.php
 
 Sitemap: {{ORIGIN}}/sitemap_index.xml
+Sitemap: http://other.example.com/sitemap_index.xml

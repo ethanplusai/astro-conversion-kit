@@ -42,6 +42,24 @@ function absoluteSrcset(srcset, resolve) {
     .join(', ');
 }
 
+// A <script type> that loads code other than a classic script.
+const SCRIPT_KINDS = { module: 'module', importmap: 'importmap' };
+
+// The file URLs an import map names: its `imports` values and every `scopes` entry's values.
+// A value ending in "/" maps a path prefix, not a file, and is skipped; broken JSON names none.
+function importMapUrls(code) {
+  let map;
+  try {
+    map = JSON.parse(code);
+  } catch {
+    return [];
+  }
+  const tables = [map?.imports, ...Object.values(map?.scopes ?? {})];
+  return tables
+    .flatMap((table) => (table && typeof table === 'object' ? Object.values(table) : []))
+    .filter((value) => typeof value === 'string' && value.trim() && !value.trim().endsWith('/'));
+}
+
 function toInt(value) {
   const n = Number.parseInt(value ?? '', 10);
   return Number.isFinite(n) ? n : null;
@@ -89,13 +107,27 @@ export function extractPage(html, url, { status = null, finalUrl = null, snapsho
     fields: formFields(form),
   }));
 
-  const scripts = findAll(document, byTag('script'))
-    .filter((n) => (attr(n, 'type') ?? '').toLowerCase() !== 'application/ld+json')
-    .map((n) => {
-      const src = resolve(attr(n, 'src'));
-      const code = src ? '' : n.childNodes.map((c) => c.value ?? '').join('');
-      return { src, inline: !src, ...detectVendor(src, code) };
-    });
+  // One entry per <script> element (kind "script", "module" or "importmap"), each URL an import
+  // map names right after its element (kind "importmap"), then each <link rel=modulepreload>
+  // (kind "modulepreload"). A file URL listed by an earlier map or link is not listed again.
+  const scripts = [];
+  const listed = new Set();
+  const addFile = (src, kind) => {
+    if (!src || listed.has(src)) return;
+    listed.add(src);
+    scripts.push({ src, inline: false, kind, ...detectVendor(src, '') });
+  };
+  for (const n of findAll(document, byTag('script'))) {
+    const type = (attr(n, 'type') ?? '').trim().toLowerCase();
+    if (type === 'application/ld+json') continue;
+    const kind = SCRIPT_KINDS[type] ?? 'script';
+    const src = resolve(attr(n, 'src'));
+    const code = src ? '' : n.childNodes.map((c) => c.value ?? '').join('');
+    if (src) listed.add(src);
+    scripts.push({ src, inline: !src, kind, ...detectVendor(src, code) });
+    if (kind === 'importmap' && !src) for (const url of importMapUrls(code)) addFile(resolve(url), 'importmap');
+  }
+  for (const href of linkHref('modulepreload')) addFile(href, 'modulepreload');
 
   const styles = [];
   walk(document, (n) => {

@@ -2,16 +2,18 @@
 // Builds one stylesheet from the captured CSS, dropping the rules no page used
 // according to css-coverage.mjs, and keeping the ones coverage cannot see.
 // Exit codes: 0 written, 1 a stylesheet file had no matching coverage (kept whole), 2 usage or input error.
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import * as csstree from 'css-tree';
 import { assertNodeVersion } from './lib/node-version.mjs';
+import { scopeInlineRules } from './lib/inline-scope.mjs';
 
 const HELP = `Usage: node css-prune.mjs --css <capture/css dir> --coverage coverage.json
                          --out <site.css> --report prune-report.json
                          [--widths 390,768,1440] [--origin https://www.example.com]
+                         [--pages-out <dir>]
 
 Reads every .css file in --css (in capture/css/manifest.json order when present,
 [{ file, href|inline, pages[] }]), matches each to its coverage from
@@ -22,6 +24,15 @@ without a manifest they match a file of the same basename. inline:<n> entries
 (one <style> block each) match every inline file (inline-<slug>.css, a page's
 blocks) that contains their text, trimmed, and serves one of their pages; an
 inline file's kept rules follow a comment naming its pages and file.
+
+Per-page inline rules: when two inline files have a rule with the same
+selector (inside the same @media, @supports or @layer) and other declarations,
+as block themes print with counter classes (.wp-elements-1 a { color: white }
+on one page, { color: black } on another), that rule, and every inline rule
+whose selector names one of its classes, is left out of --out and written to
+<--pages-out>/<inline file name> (default: a pages/ folder beside --out), one
+file per inline file, for the build to link only on that file's pages. Rules
+the inline files agree on, and blocks pages share, stay in --out.
 
 Kept:
   - every rule any page used (its range overlaps a used range)
@@ -69,14 +80,18 @@ defaults to the most common origin among the manifest's hrefs and pages
 
 The report is { before: bytes, after: bytes, removedRules: n,
 keptBecause: { pseudo: n, atRule: n, untestedMedia: n, state: n }, unmatched: [file],
-uncoveredInline: [file], unresolvedImports: [{ file, href, reason }] },
+uncoveredInline: [file], unresolvedImports: [{ file, href, reason }],
+pageSheets: [{ file, pages, rules }] },
 where keptBecause counts rules and blocks no page used that were kept by the
 exceptions above (untestedMedia also counts sheets imported under an untested
 media list; state the rules kept for stateRanges, printed as "kept for state:
 N rules"). Coverage written before stateRanges existed has none: run
 css-coverage.mjs again so interaction states are kept.
 
-  --widths  the viewport widths the coverage run used (default 390,768,1440)
+  --widths     the viewport widths the coverage run used (default 390,768,1440)
+  --pages-out  folder for the per-page sheets (default: pages/ beside --out);
+               written only when some page has rules of its own; every
+               inline-*.css already in it is removed first (other files stay)
 
 Exit codes: 0 written, 1 a stylesheet file had no matching coverage (written, kept whole),
 2 usage or input error.`;
@@ -508,6 +523,13 @@ function inlineComment(file) {
   return `/* ${inner.replaceAll('*/', '* /')} */`;
 }
 
+// The comment that heads a per-page sheet.
+function pageComment(file) {
+  const inner = `rules of the inline <style> blocks of ${(file.entry?.pages ?? []).join(', ') || file.name} (${file.name}) `
+    + 'that another page defines differently: link this file only on these pages';
+  return `/* ${inner.replaceAll('*/', '* /')} */`;
+}
+
 export function prune({ css, coverage, widths = DEFAULT_WIDTHS, origin }) {
   const { files, hasManifest, manifest } = listFiles(css);
   if (!files.length) throw new UsageError(`--css ${css} holds no .css files`);
@@ -524,8 +546,10 @@ export function prune({ css, coverage, widths = DEFAULT_WIDTHS, origin }) {
     unmatched: [],
     uncoveredInline: [],
     unresolvedImports: [],
+    pageSheets: [],
   };
   const emitted = new Set();
+  const inlineKept = new Map(); // inline file name -> its kept rules, split by scopeInlineRules
 
   // Why an @import target is not among the captured files.
   const unresolvedReason = (href) => {
@@ -576,18 +600,34 @@ export function prune({ css, coverage, widths = DEFAULT_WIDTHS, origin }) {
       const inner = render(target, whole || untested);
       if (inner) parts.push(wrapImport(inner, ref));
     });
-    if (result.css) parts.push(inline ? `${inlineComment(file)}\n${result.css}` : result.css);
+    if (result.css && inline) inlineKept.set(file.name, result.css);
+    else if (result.css) parts.push(result.css);
     return parts.join('\n');
   };
 
   for (const file of files) {
     if (emitted.has(file.name)) continue;
     const text = render(file);
-    if (text) bodies.push(text);
+    if (isInline(file)) bodies.push({ file, before: text });
+    else if (text) bodies.push(text);
   }
-  const output = `${[...header.layers, ...header.imports, ...header.namespaces, ...bodies].join('\n')}\n`;
+  // Inline files are never import targets, so their kept rules are split once all are known.
+  const scoped = scopeInlineRules([...inlineKept].map(([name, kept]) => ({ name, css: kept })));
+  const pageSheets = [];
+  const body = bodies.map((part) => {
+    if (typeof part === 'string') return part;
+    const { file, before } = part;
+    const split = scoped.get(file.name);
+    if (split?.rules) {
+      const pages = file.entry?.pages ?? [];
+      pageSheets.push({ file: file.name, pages, rules: split.rules, css: `${pageComment(file)}\n${split.own}\n` });
+    }
+    return [before, split?.shared ? `${inlineComment(file)}\n${split.shared}` : ''].filter(Boolean).join('\n');
+  }).filter(Boolean);
+  report.pageSheets = pageSheets.map(({ file, pages, rules }) => ({ file, pages, rules }));
+  const output = `${[...header.layers, ...header.imports, ...header.namespaces, ...body].join('\n')}\n`;
   report.after = Buffer.byteLength(output);
-  return { output, report };
+  return { output, report, pageSheets };
 }
 
 function parseWidths(value) {
@@ -610,6 +650,7 @@ function parse(argv) {
         report: { type: 'string' },
         widths: { type: 'string', default: DEFAULT_WIDTHS.join(',') },
         origin: { type: 'string' },
+        'pages-out': { type: 'string' },
         help: { type: 'boolean', default: false },
       },
     }));
@@ -618,6 +659,7 @@ function parse(argv) {
   }
   if (values.help) return { help: true };
   for (const name of ['css', 'coverage', 'out', 'report']) if (!values[name]) throw new UsageError(`--${name} is required`);
+  values.pagesOut = values['pages-out'] ?? join(dirname(values.out), 'pages');
   let origin;
   if (values.origin) {
     origin = originOf(values.origin);
@@ -649,6 +691,17 @@ function main() {
   for (const file of [options.out, options.report]) mkdirSync(dirname(file), { recursive: true });
   writeFileSync(options.out, result.output);
   writeFileSync(options.report, `${JSON.stringify(result.report, null, 2)}\n`);
+  // A previous run's sheets go first, so none is left for a page set that no longer has one.
+  if (existsSync(options.pagesOut)) {
+    for (const name of readdirSync(options.pagesOut)) {
+      if (/^inline-.*\.css$/.test(name)) rmSync(join(options.pagesOut, name), { force: true });
+    }
+  }
+  if (result.pageSheets.length) {
+    mkdirSync(options.pagesOut, { recursive: true });
+    for (const sheet of result.pageSheets) writeFileSync(join(options.pagesOut, sheet.file), sheet.css);
+    console.log(`wrote ${result.pageSheets.length} per-page sheet(s) to ${options.pagesOut}: link each only on the pages pageSheets lists in ${options.report}`);
+  }
   const { before, after, removedRules, keptBecause, unmatched } = result.report;
   console.log(`css: ${before} -> ${after} bytes, ${removedRules} rules removed (kept unused: ${keptBecause.pseudo} pseudo, `
     + `${keptBecause.atRule} at-rule, ${keptBecause.untestedMedia} untested media; kept for state: ${keptBecause.state} rules); wrote ${options.out}`);

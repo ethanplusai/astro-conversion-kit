@@ -109,14 +109,39 @@ test('every top sitemap in dist must list every page: one that misses a page fai
   assert.doesNotMatch(result.stdout, /sitemap sitemap-index\.xml/);
 });
 
-test('a sitemap URL with lower-case percent escapes matches the page (RFC 3986: %c3 is %C3)', () => {
-  const dist = mkdtempSync(join(root, 'dist-escapes-'));
-  const origin = 'https://www.example.com';
-  writeFileSync(join(dist, 'sitemap.xml'), `<urlset><url><loc>${origin}/caf%c3%a9/</loc></url></urlset>`);
-  const routes = [{ path: '/caf%C3%A9/', status: 200, kind: 'page' }];
-  assert.deepEqual(checkSitemaps({ dist, capture, routes, compareOrigin: origin }).failures, []);
-  writeFileSync(join(dist, 'sitemap.xml'), `<urlset><url><loc>${origin}/cafe/</loc></url></urlset>`);
-  assert.equal(checkSitemaps({ dist, capture, routes, compareOrigin: origin }).failures.length, 2, 'another URL still fails');
+test('a Sitemap: line on another host passes only when the live robots.txt carried it verbatim', async () => {
+  const dist = makeDist(join(root, 'dist-robots-other-host'));
+  const own = `User-agent: *\nSitemap: ${DIST_ORIGIN}/sitemap-index.xml\n`;
+  // The fixture's live robots.txt names its sister site's sitemap (capture/robots.txt).
+  assert.match(readFileSync(join(capture, 'robots.txt'), 'utf8'), /^Sitemap: http:\/\/other\.example\.com\/sitemap_index\.xml$/m);
+  writeFileSync(join(dist, 'robots.txt'), `${own}Sitemap: http://other.example.com/sitemap_index.xml\n`);
+  const carried = await sitemaps(dist);
+  assert.equal(carried.code, 0, carried.stdout);
+  assert.match(carried.stdout, /^sitemaps: 15 checked, 0 failed$/m);
+
+  writeFileSync(join(dist, 'robots.txt'), `${own}Sitemap: http://other.example.com/staging-sitemap.xml\n`);
+  const notLive = await sitemaps(dist);
+  assert.equal(notLive.code, 1);
+  assert.match(notLive.stdout, /^ {2}\/robots\.txt sitemap line: expected "https:\/\/www\.example\.com\/staging-sitemap\.xml", got "http:\/\/other\.example\.com\/staging-sitemap\.xml"$/m);
+  assert.match(notLive.stdout, /^sitemaps: 15 checked, 1 failed$/m);
+
+  const noRobots = join(root, 'capture-no-robots');
+  cpSync(capture, noRobots, { recursive: true });
+  rmSync(join(noRobots, 'robots.txt'));
+  writeFileSync(join(dist, 'robots.txt'), `${own}Sitemap: http://other.example.com/sitemap_index.xml\n`);
+  const unknown = await runGate('sitemaps', ['--dist', dist, '--baseline', baseline, '--capture', noRobots, '--origin', DIST_ORIGIN], { cwd: root });
+  assert.equal(unknown.code, 1, 'without the captured robots.txt the line is not known to be live');
+});
+
+test('a carried Sitemap: line on the site\'s own host is never skipped: with --origin staging it still fails', async () => {
+  const dist = makeDist(join(root, 'dist-robots-own-host'));
+  const live = readFileSync(join(capture, 'robots.txt'), 'utf8');
+  const ownLine = [...live.matchAll(/^Sitemap:\s*(\S+)$/gm)].map((m) => m[1]).find((u) => !u.includes('other.example.com'));
+  assert.ok(ownLine, 'the fixture robots.txt names its own sitemap');
+  writeFileSync(join(dist, 'robots.txt'), `User-agent: *\nSitemap: ${ownLine}\n`);
+  const result = await runGate('sitemaps', ['--dist', dist, '--baseline', baseline, '--capture', capture, '--origin', 'https://staging.example.com'], { cwd: root });
+  assert.equal(result.code, 1, result.stdout);
+  assert.match(result.stdout, /\/robots\.txt sitemap line: expected "https:\/\/staging\.example\.com\//);
 });
 
 test('a robots.txt Sitemap: line must point at a file in dist', async () => {
@@ -169,4 +194,14 @@ test('usage and missing inputs exit 2; --help exits 0', async () => {
   const help = await runGate('sitemaps', ['--help']);
   assert.equal(help.code, 0);
   assert.match(help.stdout, /--capture/);
+});
+
+test('a sitemap URL with lower-case percent escapes matches the page (RFC 3986: %c3 is %C3)', () => {
+  const dist = mkdtempSync(join(root, 'dist-escapes-'));
+  const origin = 'https://www.example.com';
+  writeFileSync(join(dist, 'sitemap.xml'), `<urlset><url><loc>${origin}/caf%c3%a9/</loc></url></urlset>`);
+  const routes = [{ path: '/caf%C3%A9/', status: 200, kind: 'page' }];
+  assert.deepEqual(checkSitemaps({ dist, capture, routes, compareOrigin: origin }).failures, []);
+  writeFileSync(join(dist, 'sitemap.xml'), `<urlset><url><loc>${origin}/cafe/</loc></url></urlset>`);
+  assert.equal(checkSitemaps({ dist, capture, routes, compareOrigin: origin }).failures.length, 2, 'another URL still fails');
 });

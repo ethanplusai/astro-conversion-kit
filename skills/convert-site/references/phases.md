@@ -48,7 +48,8 @@ build-baseline carries them into the baseline's redirects. Then:
 Then the optional Lighthouse step, exactly as `capture-site` step 7 says: only when
 `npx --no-install lighthouse --version` answers (never install it unasked), one run per
 template representative into `capture/lighthouse-live/<template>`; if it is missing, write that
-in the Notes. `suggest-improvements` reads `capture/lighthouse-live` and lists its performance
+in the Notes. Lighthouse is optional: when it is not installed the step is reported as skipped,
+never as a failure, and nothing waits on it. `suggest-improvements` reads `capture/lighthouse-live` and lists its performance
 checks as "Not covered" without it. Last:
 
     node $KIT/skills/capture-site/scripts/readme.mjs --capture capture
@@ -120,12 +121,20 @@ The plan phase decides; the scaffold writes. Every decision goes into state with
 
        node $KIT/skills/convert-site/scripts/media-plan.mjs --media capture/media.json --host <hosting> --out .conversion/media-plan.json
 
-   Exit 2 with "media paths share no folder": choose the prefix that holds most files, pass
-   `--prefix`, and record a decision. Mode `store` with no store credentials in the environment
+   Without `--prefix` the plan takes the longest folder holding at least 90 % of the media
+   bytes, never a theme or plugin folder (`/wp-content/themes/`, `/wp-content/plugins/`: those
+   files stay in `public/` and are counted outside the prefix) and never a WordPress year or
+   month folder. Exit 2 with "no media folder holds at least 90 %": choose the prefix that holds
+   most of the bytes, pass `--prefix`, and record a decision. Mode `store` with no store credentials in the environment
    (`BLOB_READ_WRITE_TOKEN`, or `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`,
    `R2_BUCKET`): rerun with `--mode live-temporary`, record the decision, and add the needs-you
    item "create the store, upload, regenerate rewrites; live-temporary must be gone before DNS
-   moves".
+   moves". When `media-plan` prints "N unreferenced sizes listed, not downloaded; pass --sizes all
+   to the capture if old links may use them", put that line in the plan's media decision and
+   the status message as printed: those WordPress sizes are in `baseline/media.json` with
+   `downloaded: false`, never built, and the media gate counts them as skipped. Rerun
+   `media.mjs --sizes all` (then the plan and the baseline) only if the owner says old emails
+   or other sites may link to them.
 4. **Templates**, from `capture/templates.json`: a split or merge that looks wrong is a decision.
 5. **Oddities**, one decision each, default "reproduce live": a missing or second H1, a dead
    tag, a broken internal link, a redirect chain, a sitemap URL that 404s, a slug claimed twice
@@ -136,6 +145,12 @@ The plan phase decides; the scaffold writes. Every decision goes into state with
    options are a third-party embed, keeping it on the old platform under a subdomain, or a
    separate project. The forms, analytics ids and media size found go into the plan and the
    status message too; the intake never asked for them.
+7. **Forms.** The intake asked about forms before the capture could know whether one posts. The
+   intake's forms answer is applied only if `inventory.json` lists a POST form (`forms.md`: a
+   `GET` search form is not rewired, nor a form a third-party script draws at runtime, which
+   `third-party.md` covers). If it lists none, the status
+   message says "Forms: none to rewire" and no form needs-you item is created (no form id is
+   asked for and `placeholders.form-id` does not apply).
 
 For example:
 
@@ -202,7 +217,9 @@ flags in `baseline/scripts.json` (`third-party.md`).
 Read `build-rules.md`, `forms.md`, `third-party.md` and your host file first. In this order:
 
 1. Media (`build-rules.md`, "Media") and fonts; for `store`, upload now (host file).
-2. CSS: `node $KIT/skills/convert-site/scripts/css-prune.mjs --css capture/css --coverage capture/css-coverage.json --out src/styles/site.css --report .conversion/css-prune-report.json`.
+2. CSS: `node $KIT/skills/convert-site/scripts/css-prune.mjs --css capture/css --coverage capture/css-coverage.json --out src/styles/site.css --report .conversion/css-prune-report.json`. When it prints `wrote N per-page sheet(s)`, give each page its `pageSheet`
+   from the report's `pageSheets`. css-prune clears the old `inline-*.css` in
+   `src/styles/pages/` on each run, so commit the folder as it leaves it.
    Exit 1 means a stylesheet had no coverage and was kept whole: record a decision.
 3. One layout per template, with the header, navigation and footer as components.
 4. The representative page of each template, its content moved from the captured markup.
@@ -226,7 +243,13 @@ representatives:
     node scripts/verify/text.mjs --paths "$P"
 
 The media gate with `--paths` checks the media those pages reference (`referencedBy` in
-`baseline/media.json`), so "media: 0 checked" means those pages reference no media file. Add `--allow-extra /thank-you/` to the routes gate when that page is new (`forms.md`). Each of
+`baseline/media.json`), so "media: 0 checked" means those pages reference no media file. Add `--allow-extra /thank-you/` to the routes gate when that page is new (`forms.md`).
+Query-concatenated script URLs (WordPress VIP's `/_static/??a.js,b.js`) cannot be served by a
+static host and `assets.mjs` does not rewrite them: you save each concatenation as one file at
+`/_static/concat/<hash>.js`, point the markup at it (a decision row), and pass
+`--allow-extra '/_static/concat/*'` on every routes gate run. Only `routes.mjs` (and
+`npm run verify`, which hands it on) accepts `--allow-extra`; the other single gate scripts
+exit 2 on it with "Unknown option '--allow-extra'" and their usage text. Each of
 the seven must exit 0 before the commit (`feat: <template> template`). `links`,
 `redirects` and `sitemaps` are not run yet; they run in phase 7.
 
@@ -234,20 +257,26 @@ the seven must exit 0 before the commit (`feat: <template> template`). `links`,
 template set: shoot new at 390, 768 and 1440, diff against `capture/screens/live`, styles, sheet,
 look, write down every difference, fix from `capture/`, repeat. Never reshoot live to get a
 match. The proof is `npm run review:diff -- --a capture/screens/live --b review/new --out
-review/diff` and `npm run review:styles -- --live $LIVE --new http://localhost:4321 --routes capture/templates.json --widths 390,768,1440 --out review/styles.json` exiting 0 for the template set (with `npm run preview` serving the build). From here a fix goes
+review/diff` and `npm run review:styles -- --live $LIVE --new http://localhost:4321 --routes capture/templates.json --widths 390,768,1440 --out review/styles.json` exiting 0 for the template set (with `npm run review:serve` serving the build). From here a fix goes
 in the template, never in one page.
 
-**Serve, then wait.** Before every `review:shoot` or `review:styles` against the build, start
-the preview in the background and wait until it serves this build's `dist/` (a sentinel file),
-never a server that is still starting or a leftover one; then remove the sentinel, so no gate
-counts it as an extra:
+**Serve, then wait.** Before every `review:shoot` or `review:styles` against the build, serve
+it with `npm run review:serve` (it applies `vercel.json` like staging does) and use that origin for
+every `review:*` step. Its redirects keep their status codes, `dist/` answers next, and a rewrite to
+another origin is proxied: media left on live in `live-temporary` mode or not yet in the store, an
+`importmap` target rewritten to live. `astro preview` ignores `vercel.json`, so every rewritten
+image 404s there and every pixel diff fails: `npm run preview` is only for sites whose media is in
+the repo. On Cloudflare (no `vercel.json`) it applies `dist/_redirects` the same way. It re-reads
+either file when it changes. Stop any leftover server first, then start it in the background; it returns once it
+answers, and it reads `dist/` on every request, so a rebuild needs no restart:
 
-    node -e "require('fs').writeFileSync('dist/preview-ready.txt', String(Date.now()))"
-    npm run preview -- --background --port 4321
-    node -e "const t=require('fs').readFileSync('dist/preview-ready.txt','utf8');(async()=>{for(let i=0;i<300;i++){try{const r=await fetch('http://localhost:4321/preview-ready.txt');if(r.ok&&(await r.text())===t)process.exit(0)}catch{}await new Promise(r=>setTimeout(r,200))}console.error('preview did not answer in 60 s');process.exit(1)})()"
-    rm dist/preview-ready.txt
+    npm run review:serve -- --stop
+    npm run review:serve -- --background --port 4321
 
-Stop it with `npx astro preview stop` when the review is done, and before the run ends.
+A port another process holds exits 2 ("port 4321 is in use by another process (pid <n>,
+<command>); pass --port") instead of binding another interface, where Chromium would reach the
+other server: pass a free `--port` and use that origin. Stop it with
+`npm run review:serve -- --stop` when the review is done, and before the run ends.
 
 **Overrides.** A looser visual threshold lives in the committed `docs/visual-overrides.json`,
 keyed by route folder: `{ "<route>": { "id": "<decision id>", "threshold": <at most 2>,
@@ -353,8 +382,14 @@ accepted lines for the PR. Never pass `--confirm`: the human checklist ids (`for
 `analytics`, `hosting`, `payments`, `legal`, `gsc-baseline`, `dns`, `signoff`, `rollback`) go to
 `docs/LAUNCH.md` section A for the person.
 
-Then the staging deploy (host file; on Vercel: link with the team slug, set the protection
-the intake chose (`publicStaging`), then deploy, and take the URL from the deploy's JSON `deployment.url`), and:
+Then the staging deploy (host file; on Vercel: link with the team slug, deploy, take the URL
+from the deploy JSON: the production alias from `deployment.productionUrl`,
+`https://<slug>.vercel.app` when the field is missing, confirmed with one GET that answers 200 with the staging noindex,
+never the raw deployment URL; only when the owner opted in to protection (`publicStaging`
+`false`), the protection PATCH comes between link and deploy). On the default public path every
+staging deploy is `npx vercel deploy --prod --yes --scope <scope>` from `astro-rebuild`: until
+the domain is attached on launch day the production alias is staging, so every redeploy before
+launch updates what reviewers and the audit see. Then:
 
     npm run verify:live -- --base <staging url> --expect-noindex
     node $KIT/skills/launch-audit/scripts/launch-audit.mjs --url <staging url> --staging --ignore-robots --old-url $LIVE --out $SITE/review/launch-audit
@@ -364,10 +399,13 @@ blocks everything, and without it the audit crawls no page. Links the captured c
 absolute to the live origin (as WordPress does) are off-origin on staging, so the audit crawls
 only what is linked relatively and lists the rest as dropped: copy that line into the PR's Not
 covered.
-On Vercel add `--bypass "$VERCEL_AUTOMATION_BYPASS_SECRET"` to `verify:live` when that variable is
-set in your environment (a new project has none until a person creates it; without it
-`verify-live` stops with exit 3, `deployment protection: ...`, and the staging check goes under
-"Not covered" with the needs-you line from the host file); with media in a store add `--media-manifest media-manifest.json`. Copy
+On Vercel with the default public staging, no `--bypass` is needed; an exit 3 with
+`deployment protection: ...` there means the run was pointed at the raw deployment URL: rerun
+on the alias. Only when the owner opted in to protection, add
+`--bypass "$VERCEL_AUTOMATION_BYPASS_SECRET"` to `verify:live` when that variable is set in your
+environment (a new project has none until a person creates it; without it `verify-live` stops
+with exit 3, `deployment protection: ...`, and the staging check goes under "Not covered" with
+the needs-you line from the host file); with media in a store add `--media-manifest media-manifest.json`. Copy
 the audit's `baseline.json` and `redirects.csv` to `docs/launch/audit-baseline.json` and
 `docs/launch/audit-redirects.csv` (the cutover reads them). Fix every audit blocker on the
 branch, or list it in the PR with why it cannot be fixed. Then the one test submission

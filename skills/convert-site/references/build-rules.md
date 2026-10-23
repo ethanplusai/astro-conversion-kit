@@ -36,6 +36,11 @@ parity and this file is wrong: say so and fix this file.
   root-relative or to another host. The links gate counts same-origin absolute links as internal.
   Dropping or changing one because it cannot work on a static site is a `links` exception
   (`exceptions.json`, SKILL.md "Decisions, exceptions, proposals"), never an edit.
+- **WordPress API head links are kept as captured.** `wp-json/` (`rel="https://api.w.org/"`),
+  `xmlrpc.php?rsd` (`EditURI`) and `wp-json/wp/v2/pages/N` (`alternate`) stay in the head
+  although nothing answers them on a static host. The build generates their links exceptions,
+  one row per API link (reason "WordPress API link kept as captured"), rather than dropping the
+  links.
 - **Same-origin asset URLs are root-relative, by default.** A `<script src>`, a `<link href>` for
   a stylesheet, icon or preload, an `<img src>` and `srcset`, and a `<video>`, `<audio>` or
   `<source>` `src` (and `poster`) that the captured markup writes absolute to the live origin
@@ -49,14 +54,28 @@ parity and this file is wrong: say so and fix this file.
 ## CSS
 
 - Coverage first, then prune: `capture/css-coverage.json` (phase 2) and `css-prune.mjs` into
-  `src/styles/site.css`, imported once by `Base.astro`. The pruned file is the stylesheet; it is
+  `src/styles/site.css`, linked once by `Base.astro`: the template imports it by URL
+  (`import siteCss from '../styles/site.css?url'`) and links it before the head slot, so a
+  page's own head content comes after it. Never switch to a plain `import '../styles/site.css'`:
+  Astro puts that link at the end of `<head>`, after every `set:html` head block. The scaffold
+  ships a one-line placeholder `site.css` so it builds before the prune replaces it, and
+  `src/styles/pages/` may be absent. The pruned file is the stylesheet; it is
   never rewritten, reformatted or "cleaned up". The used rules of the head's `<style>` blocks
-  (WordPress emits several per page) are in it, each page's set under a comment naming its pages.
+  (WordPress emits several per page) are in it, each page's set under a comment naming its pages,
+  except a rule another page defines differently (a block theme's counter classes: `.wp-elements-1 a`
+  is white on one page and black on the next) and every rule naming its class (a class it styles, not one inside its `:not()`/`:where()`): those go to
+  `src/styles/pages/<inline file>`, listed under `pageSheets` (`file`, `pages`, `rules`) in
+  `.conversion/css-prune-report.json`. Link each page sheet only on the pages it lists, after
+  `site.css` (Base.astro's `pageSheet` prop); never copy its rules into `site.css`. Inline blocks
+  are known by their text, so WordPress 6.9+'s `/*# sourceURL=... */` comments change nothing.
   A captured `@import` is replaced by the imported sheet's pruned rules in place; one whose
   target was not captured stays an `@import` and is listed under `unresolvedImports` in
   `.conversion/css-prune-report.json`: check each one loads from the new site or restore its
   rules. Exit 1 means a stylesheet file (`unmatched`) never appeared in coverage and was kept
   whole: re-run coverage on the pages that link it.
+  `uncoveredInline` lists the pages' `<style>` sets no coverage run saw (usually pages past the
+  coverage cap of 10 per template); they are kept whole, so nothing is lost but bytes. Add one of
+  their pages to the coverage routes and run coverage and the prune again when the bytes matter.
 - **One stylesheet for every template** is the v0.1 default, recorded as a decision in the plan
   (topic "one pruned site.css", default "one file", cost if wrong "each page loads rules other
   templates use"). Splitting it per template is an improvement the suggestions report may

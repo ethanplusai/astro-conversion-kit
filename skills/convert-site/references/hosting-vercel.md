@@ -4,20 +4,26 @@ The default host. The site is a static project with no adapter; `vercel.json` ca
 the URL mode, the redirects (from `redirects.csv`) and, when media is not in the repo, one rewrite.
 The kit's `docs/hosting.md` explains the background; this file is what you run.
 
-You create and link the project, protect it before its first deploy and deploy staging. You
-never change any other project setting, never add a domain, and never set an environment
-variable other than the one the runbook names for launch day.
+You create and link the project and deploy staging; only when the owner opted in to protection
+do you also protect it before its first deploy. You never change any other project setting,
+never add a domain, and never set an environment variable other than the one the runbook names
+for launch day.
 
 ## Project and staging deploy (phase 10, prelaunch)
 
 Only when `preflight.mjs` reports `vercel.loggedIn: true`. From `SITE`, in this order, with
-`<scope>` the team slug from the intake (`S get intake.vercelScope`) and `<body>` the
-protection file below:
+`<scope>` the team slug from the intake (`S get intake.vercelScope`):
 
     npx vercel link --yes --project <slug> --scope <scope>
-    npx vercel api /v9/projects/<slug> --method PATCH --input <body> --scope <scope>
-    npx vercel api /v9/projects/<slug> --scope <scope>
-    npx vercel deploy --yes --scope <scope>
+    npx vercel deploy --prod --yes --scope <scope>
+
+That is the whole default path (`publicStaging` `true`): no protection PATCH, no project
+setting changed, and every staging deploy is a production deploy: `npx vercel deploy --prod
+--yes --scope <scope>` from `astro-rebuild`, every time, until launch. Before the custom domain
+is attached (launch day, from `main`), the production alias `<slug>.vercel.app` is staging, so
+each redeploy updates what reviewers and the audit see. When the owner opted in to protection,
+the PATCH and its check go between the two, and the deploys after the first are previews
+(Protection, below).
 
 **Scope.** The CLI runs non-interactively for an agent: `link` without `--scope` exits 1 with a
 JSON `missing_scope` answer and creates nothing, and it never picks a team for you. The scope is
@@ -35,28 +41,49 @@ deploys production from Git) and writes `.env.local` holding a `VERCEL_OIDC_TOKE
 `npx vercel git connect <repo url> --yes` (without `--yes` it prints a y/N prompt and exits 0
 having done nothing).
 
-**Protection, before the first deploy.** The first deploy of a new project is a production
-deploy, aliased to `<slug>.vercel.app`, and the default protection covers previews and
-deployment URLs, not that alias: left alone, the alias is public. So the intake asks whether
-staging may be public before launch (`S get intake.publicStaging`, default `false`). Write the
-body to a file outside the repository (for example `$TMPDIR/vercel-protection.json`):
+**Why public staging is safe.** Vercel's default Deployment Protection covers preview
+deployments and raw deployment URLs but leaves the production alias public. The first deploy
+of a new project is a production deploy at `<slug>.vercel.app`, so that alias is the staging
+URL, and it is public without any change. Every staging page carries the staging noindex (the
+robots meta, and a robots.txt that blocks everything), and the staging link is shared with
+reviewers on purpose. `verify-live` and `launch-audit` run against the alias, never the raw
+`*-<hash>.vercel.app` deployment URL: that one stays protected by default, and a script pointed
+at it gets the `302` to `vercel.com/sso-api` and exits 3 with `deployment protection: ...`. On
+the default path that exit means the wrong URL: rerun on the alias.
+
+**Protection, only when the owner opted in.** `S get intake.publicStaging` is `false` only when
+the owner asked for staging behind Vercel Authentication. Then, before the first deploy, write
+the body to a file outside the repository (for example `$TMPDIR/vercel-protection.json`) and run,
+in this order:
+
+    npx vercel link --yes --project <slug> --scope <scope>
+    npx vercel api /v9/projects/<slug> --method PATCH --input <body> --scope <scope>
+    npx vercel api /v9/projects/<slug> --scope <scope>
+    npx vercel deploy --yes --scope <scope>
 
 | `publicStaging` | `<body>` | The GET must show | Then |
 |---|---|---|---|
-| `false` (default) | `{"ssoProtection":{"deploymentType":"all"}}` | `"ssoProtection": {"deploymentType": "all"}` | every deployment, the alias included, is protected; `verify-live` needs the bypass secret (Deployment protection, below) |
-| `true` | `{"ssoProtection":null}` | `"ssoProtection": null` | Vercel Authentication is off; `verify-live` and the audit run without `--bypass`; pages still carry the staging noindex and previews send `X-Robots-Tag: noindex` |
+| `true` (default) | none: no PATCH | nothing to check: the project keeps Vercel's default protection | the alias is public; `verify-live` and the audit run on it without `--bypass`; pages carry the staging noindex |
+| `false` (opted in) | `{"ssoProtection":{"deploymentType":"all"}}` | `"ssoProtection": {"deploymentType": "all"}` | every deployment, the alias included, is protected; `verify-live` needs the bypass secret (Deployment protection, below) |
 
 If the PATCH fails or the GET shows another value, do not deploy; the needs-you line is "set
 Deployment Protection on the project (Settings, Deployment Protection, Vercel Authentication:
-All Deployments, or off when staging may be public), then `npx vercel deploy --yes --scope
-<scope>`". This is the one project setting you change, on the project you just created; in the
-`false` case launch day sets it back to the default (runbook).
+All Deployments), then `npx vercel deploy --yes --scope <scope>`". This is the one project
+setting you change, on the project you just created, and launch day sets it back to the
+default (runbook).
 
-**Deploy.** `vercel deploy --yes` ends with a JSON block: read `deployment.url` (the staging URL)
-and `deployment.target` from it rather than the text above it. `target` is `"production"` on the
-first deploy of a new project and `null` (a preview) after that; with `deploymentType` `"all"`
-both are protected. Never pass `--prod`. Record the URL: `S set staging '"<url>"'`. Staging builds
-without `PUBLIC_INDEXABLE`, so every page is noindexed whatever the target.
+**Deploy.** `vercel deploy` ends with a JSON block: read `deployment.url` and
+`deployment.target` from it rather than the text above it. `deployment.url` is the raw
+deployment URL. On the default path `target` is `"production"` every time, and the staging URL
+is the production alias, taken from `deployment.productionUrl` in the same JSON (a
+production deploy carries it; the CLI also prints it as "Aliased"), with
+`https://<slug>.vercel.app` as the fallback when the field is missing. Confirm it with one GET
+that answers 200 with the staging noindex (`noindex` in the page's robots meta) before recording
+it: `S set staging '"<alias>"'`. Never the raw deployment URL. On the opt-in path the first
+`vercel deploy --yes` is a production deploy too (the first deploy of a new project always is)
+and later ones are previews (`target` `null`); with `deploymentType` `"all"` every one of them
+is protected, and `--prod` is not passed. Staging builds without `PUBLIC_INDEXABLE`, so every
+page is noindexed whatever the target.
 
 **Upload.** The CLI does not read `.gitignore`: it uploads everything except `.vercelignore`'s
 paths (and `node_modules`, `.git`, `.vercel`, `.env.local`). The scaffold's `.vercelignore` lists
@@ -72,16 +99,18 @@ When a step fails, record its needs-you line and go on as the next paragraph say
 steps after it:
 
 - `link` fails (no access to the scope): "`npx vercel teams ls`, then
-  `npx vercel link --yes --project <slug> --scope <scope>`, the protection PATCH and
-  `npx vercel deploy --yes --scope <scope>`"; no deploy.
+  `npx vercel link --yes --project <slug> --scope <scope>` and
+  `npx vercel deploy --prod --yes --scope <scope>` (with protection opted in: the protection
+  PATCH, then `npx vercel deploy --yes --scope <scope>`)"; no deploy.
 - The repository is not connected (no remote yet, or the Vercel GitHub app cannot see it):
   "connect the Vercel project to <owner>/<slug>: `npx vercel git connect <repo url> --yes`, or
   Project Settings, Git, in the dashboard"; the staging deploy still runs from the CLI.
 
-Not logged in, or no deploy: `npm run build` and `npm run preview` locally, the staging audit
+Not logged in, or no deploy: `npm run build` and `npm run review:serve` locally, the staging audit
 and `verify-live` go under "Not covered", and "log in (`npx vercel login`), then
-`npx vercel link --yes --project <slug> --scope <scope>`, the protection PATCH and
-`npx vercel deploy --yes --scope <scope>`" goes on the needs-you list.
+`npx vercel link --yes --project <slug> --scope <scope>` and
+`npx vercel deploy --prod --yes --scope <scope>` (with protection opted in: the protection PATCH,
+then `npx vercel deploy --yes --scope <scope>`)" goes on the needs-you list.
 
 ## Indexing
 
@@ -150,11 +179,11 @@ it.
 In both modes, nothing under the media prefix goes in `public/` (a file there would win over the
 rewrite).
 
-## Deployment protection
+## Deployment protection (only when the owner opted in)
 
-This applies when `publicStaging` is `false`. A protected deployment answers a request without
-the bypass with a `302` to
-`https://vercel.com/sso-api?...`, not a 401 or a login page. `verify-live` recognises it and stops
+This applies only when `publicStaging` is `false`; on the default path there is no bypass
+secret and no needs-you line for one. A protected deployment answers a request without the
+bypass with a `302` to `https://vercel.com/sso-api?...`, not a 401 or a login page. `verify-live` recognises it and stops
 with exit 3 and `deployment protection: ...` at the first such answer. A new project has no
 bypass secret: it exists only after a person creates it (Settings, Deployment Protection,
 Protection Bypass for Automation), and then reaches you as `VERCEL_AUTOMATION_BYPASS_SECRET` in
@@ -166,8 +195,8 @@ Protection), put it in the environment as `VERCEL_AUTOMATION_BYPASS_SECRET`, and
 
 ## Production (the person, on launch day)
 
-When staging was protected (`publicStaging` `false`), first restore the default so the
-production alias and the domain are public and previews stay protected: the PATCH above with
+Only when the owner opted in to protecting staging (`publicStaging` `false`), first restore
+the default so the production alias and the domain are public and previews stay protected: the PATCH above with
 the body `{"ssoProtection":{"deploymentType":"preview"}}` (check with the GET). Then `npx vercel deploy --prod --scope <scope>` from `main` after the
 merge, or the deploy the Git integration makes on the merge. Then the domain:
 `npx vercel domains add <domain>` and the records it prints. All are runbook steps, not yours.

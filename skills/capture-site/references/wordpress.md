@@ -21,8 +21,13 @@ each list as `capture/wp-rest/<type>.json`. Pages and posts found there are craw
 
 WordPress writes resized copies of each upload (`photo-300x200.jpg`, `photo-1024x683.jpg`) and
 lists them in `srcset` and in the media list's `media_details.sizes`. `media.mjs` lists every
-registered size from `wp-rest/media.json`, referenced by a page or not (`source: rest`), because
-other sites and old emails may link to any of them. A size that 404s is listed with that status.
+registered size from `wp-rest/media.json`, referenced by a page or not (`source: rest`). It
+downloads the originals and the sizes something on the site uses (a srcset, an attribute, or
+the file name anywhere in a captured page, stylesheet or script); a size only the REST list
+names is listed with `downloaded: false, reason: "unreferenced size"` and not requested, so the
+media plan and the launch runbook know it exists (a block theme registers many sizes: 886
+uploads can carry 5,440 URLs). Run it with `--sizes all` when other sites or old emails may link
+to any size. A size that 404s is listed with that status.
 
 ## `?p=` shortlinks
 

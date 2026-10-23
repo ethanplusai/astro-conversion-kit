@@ -6,9 +6,11 @@
 // hop. Shortlinks (`/?p=N`) are recorded as unverified redirects and only requested with
 // --verify-shortlinks. On WordPress the REST lists are dumped after the sitemaps (their pages and
 // posts join the queue); every stylesheet and <style> block goes to css/, every same-site
-// <script src> to js/ (stylesheets' @import rules are followed, 5 deep); after the crawl the
+// <script src> (classic or module), import map URL and modulepreload file to js/ (stylesheets'
+// @import rules are followed, 5 deep); after the crawl the
 // Wayback Machine's archived paths the crawl did not find go to wayback-unverified.txt.
-// CAPTURE_WAYBACK_CDX overrides the CDX API address (tests point it at a local stand-in).
+// CAPTURE_WAYBACK_CDX overrides the CDX API address (tests point it at a local stand-in) and
+// CAPTURE_WAYBACK_RETRY_MS the wait before its one retry.
 // A bot challenge (lib/challenge.mjs) on any page or discovery request stops the run at once:
 // the URL is recorded with status "challenge" (never a page) and queued again for --resume.
 // The tiny-untitled-page rule alone stops it only on the capture's first HTML response or on
@@ -21,7 +23,7 @@ import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertNodeVersion } from './lib/node-version.mjs';
 import { fingerprint } from './fingerprint.mjs';
-import { BLOCK_LIMIT, DEFAULT_DELAY_MS, DEFAULT_UA, fetchPaced, http } from './lib/http.mjs';
+import { BLOCK_LIMIT, DEFAULT_CONCURRENCY, DEFAULT_DELAY_MS, DEFAULT_UA, fetchPaced, http, pacing, POLITE_DELAY_MS } from './lib/http.mjs';
 import { expandSitemaps } from './lib/sitemaps.mjs';
 import { extractPage } from './lib/extract.mjs';
 import { slugFor } from './lib/slug.mjs';
@@ -42,15 +44,20 @@ meta.json (notFound: the site's 404 page, from one request for a path that canno
 as pages/404.html and text/404.txt; icons: the status /favicon.ico and /apple-touch-icon.png
 answered, one request each), sitemaps/ (every sitemap robots.txt names, and their children;
 index.json lists every sitemap URL asked for with its status and file, and one robots.txt
-names that did not answer 200 is also in meta.json discoveryErrors), robots.txt, feeds/, css/ (every stylesheet and the sheets it @imports,
-on any host and up to 5 deep, <style> blocks as inline-<slug>.css, manifest.json), js/ (every same-site <script src> file, manifest.json),
+names that did not answer 200 is also in meta.json discoveryErrors; one on another host is
+listed with skipped: "other host" and never fetched), robots.txt, feeds/, css/ (every stylesheet and the sheets it @imports,
+on any host and up to 5 deep, <style> blocks as inline-<slug>.css, manifest.json), js/ (every same-site <script src>,
+import map and modulepreload file, manifest.json with each one's kind),
 wp-rest/ (WordPress REST lists), wayback-unverified.txt
 (archived paths the crawl did not find) and state.json. Then run media.mjs --capture <dir>
 to list and download the media.
 
   <origin>              the site, e.g. https://www.example.com
   --out <dir>           the capture folder to write (e.g. capture)
-  --delay <ms>          wait between requests (default ${DEFAULT_DELAY_MS})
+  --delay <ms>          time between request starts on the site (default ${DEFAULT_DELAY_MS})
+  --concurrency <n>     requests in flight on the site at once (default ${DEFAULT_CONCURRENCY})
+  --polite              one request at a time, ${POLITE_DELAY_MS} ms apart (for shared hosts with
+                        bot walls); --delay and --concurrency override it
   --max <n>             stop after n page records (resume later with --resume)
   --resume              continue the crawl saved in <dir>/state.json
   --ua "<string>"       user agent (default: a desktop Chrome)
@@ -69,9 +76,11 @@ to list and download the media.
   --help                show this help
 
 Never requests wp-admin, wp-login, xmlrpc.php or ?s= searches, and /wp-json/ only for the
-REST lists. A Wayback failure is noted in meta.json and never fails the capture.
+REST lists. A Wayback listing that fails is asked for once more 10 s later; a second failure
+is noted in meta.json and never fails the capture.
 
-Test hooks: CAPTURE_WAYBACK_CDX=<url> replaces the Wayback CDX API address.
+Test hooks: CAPTURE_WAYBACK_CDX=<url> replaces the Wayback CDX API address;
+CAPTURE_WAYBACK_RETRY_MS=<ms> replaces the 10 s wait before the Wayback retry.
 Each URL is tried 3 times; one that still answers 403, 429, 503 or a network error is
 recorded with that status and its attempts, and the crawl moves on.
 An anti-bot challenge (SiteGround's /.well-known/sgcaptcha/, Cloudflare's challenge page, a
@@ -95,11 +104,16 @@ const PERMANENT_BLOCK = 403;
 const MAX_HOPS = 10;
 // A discovery URL that is a sitemap (saved under sitemaps/ and listed in sitemaps/index.json).
 const SITEMAP_PATH = /sitemap|\.xml(\.gz)?$/i;
+// Why a sitemap on another host is listed in sitemaps/index.json but never fetched.
+const OTHER_HOST = 'other host';
 // The root icons a launch needs, asked for once so a missing one is evidence live lacked it.
 const ROOT_ICONS = ['/favicon.ico', '/apple-touch-icon.png'];
 // HTML responses in a row matching only the tiny-page heuristic that stop the run.
 const SUSPECT_LIMIT = 3;
 const MAX_ATTEMPTS = 3;
+// The Wayback listing is asked for at most twice, 10 s apart.
+const WAYBACK_TRIES = 2;
+const WAYBACK_RETRY_MS = 10_000;
 const RETRY_MIN_MS = 500;
 const SAVE_EVERY = 25;
 const SOURCE_ORDER = ['sitemap', 'rest', 'crawl', 'shortlink', 'seed'];
@@ -132,7 +146,7 @@ function readSeedFile(file) {
 
 function parseArgs(argv) {
   const args = {
-    origin: null, out: null, delayMs: DEFAULT_DELAY_MS, max: null, resume: false, ua: DEFAULT_UA,
+    origin: null, out: null, delayMs: null, concurrency: null, polite: false, max: null, resume: false, ua: DEFAULT_UA,
     seeds: [], verifyShortlinks: false, includeQuery: false, noRest: false, noWayback: false, help: false,
   };
   const value = (i, flag) => {
@@ -143,12 +157,13 @@ function parseArgs(argv) {
     const arg = argv[i];
     if (arg === '--help' || arg === '-h') args.help = true;
     else if (arg === '--out') args.out = value((i += 1), arg);
-    else if (arg === '--delay' || arg === '--max') {
+    else if (arg === '--delay' || arg === '--max' || arg === '--concurrency') {
       const n = Number(value((i += 1), arg));
-      if (!Number.isInteger(n) || n < (arg === '--max' ? 1 : 0)) throw new UsageError(`${arg} needs a whole number`);
+      if (!Number.isInteger(n) || n < (arg === '--delay' ? 0 : 1)) throw new UsageError(`${arg} needs a whole number`);
       if (arg === '--delay') args.delayMs = n;
+      else if (arg === '--concurrency') args.concurrency = n;
       else args.max = n;
-    } else if (arg === '--ua') args.ua = value((i += 1), arg);
+    } else if (arg === '--polite') args.polite = true; else if (arg === '--ua') args.ua = value((i += 1), arg);
     else if (arg === '--seed') args.seeds.push(value((i += 1), arg));
     else if (arg === '--seed-file') args.seeds.push(...readSeedFile(value((i += 1), arg)));
     else if (arg === '--resume') args.resume = true;
@@ -170,7 +185,7 @@ function parseArgs(argv) {
     throw new UsageError(`${args.origin} is not an http(s) origin`);
   }
   if (!args.out) throw new UsageError('--out <dir> is required');
-  return args;
+  return { ...args, ...pacing(args) };
 }
 
 const bareHost = (url) => url.host.toLowerCase().replace(/^www\./, '');
@@ -232,12 +247,22 @@ function writeText(file, content) {
   writeFileSync(file, content);
 }
 
-function sitemapFileName(href) {
+const withSuffix = (name, suffix) => name.replace(/(\.xml(?:\.gz)?)?$/i, (ext) => `-${suffix}${ext}`);
+const fileSafe = (text) => text.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
+
+// A sitemap's file under sitemaps/: its base name (plus its query, if any). `taken` maps the
+// file names already used to their URL: a second URL with the same name gets a suffix from its
+// directory path, then a number, so one sitemap never overwrites another.
+function sitemapFileName(href, taken = new Map()) {
   const url = new URL(href);
-  const name = basename(url.pathname) || 'sitemap.xml';
-  if (!url.search) return name;
-  const suffix = url.search.slice(1).toLowerCase().replace(/[^a-z0-9_-]/g, '-');
-  return name.replace(/(\.xml(?:\.gz)?)?$/i, (ext) => `-${suffix}${ext}`);
+  let name = basename(url.pathname) || 'sitemap.xml';
+  if (url.search) name = withSuffix(name, url.search.slice(1).toLowerCase().replace(/[^a-z0-9_-]/g, '-'));
+  const free = (candidate) => !taken.has(candidate) || taken.get(candidate) === href;
+  if (free(name)) return name;
+  const dir = fileSafe(url.pathname.split('/').slice(0, -1).join('-'));
+  const base = dir ? withSuffix(name, dir) : name;
+  if (free(base)) return base;
+  for (let n = 2; ; n += 1) if (free(withSuffix(base, String(n)))) return withSuffix(base, String(n));
 }
 
 const byKey = (key) => (a, b) => (a[key] < b[key] ? -1 : a[key] > b[key] ? 1 : 0);
@@ -254,7 +279,7 @@ function styleBlocks(html) {
 }
 
 class Crawler {
-  constructor(state, { out, fetch, delayMs }) {
+  constructor(state, { out, fetch, delayMs, concurrency = 1 }) {
     // A challenge row only marks where the last run stopped: that URL is asked again.
     state.records = state.records.filter((r) => r.status !== CHALLENGE);
     delete state.challenge;
@@ -264,11 +289,12 @@ class Crawler {
     this.out = out;
     this.fetch = fetch;
     this.delayMs = delayMs;
+    this.concurrency = concurrency; // queue items fetched ahead of the one being recorded
     this.seen = new Set(state.seen);
     this.recorded = new Set(state.records.map((r) => r.url));
     this.full = new Map(); // url -> full record of this run (state.records keeps a slim copy)
     this.streak = new Set(); // distinct URLs blocked in a row
-    this.lastVisited = null;
+    this.lastStarted = null;
   }
 
   get scope() {
@@ -309,7 +335,15 @@ class Crawler {
   // answer (noted in meta.json, not fatal); a streak of 429, 503 or network errors on different
   // URLs throws Blocked so the run stops and resumes later.
   discoveryFetch() {
+    const site = bareHost(new URL(this.state.origin));
     return async (url, options) => {
+      // A sitemap on another host (robots.txt may name a sister site's) is never asked for:
+      // its files would collide with the site's own and its URLs are not this site's.
+      const target = new URL(url);
+      if (SITEMAP_PATH.test(target.pathname) && bareHost(target) !== site) {
+        this.noteSitemap(url, null, null, { host: target.host, skipped: OTHER_HOST });
+        return { status: null, skipped: OTHER_HOST, headers: {}, body: '' };
+      }
       for (let attempt = 1; ; attempt += 1) {
         const res = await this.fetch(url, options);
         const verdict = this.judge(res, url);
@@ -321,7 +355,7 @@ class Crawler {
           else if (SITEMAP_PATH.test(path)) {
             let file = null;
             if (res.status === 200) {
-              file = `sitemaps/${sitemapFileName(url)}`;
+              file = this.state.sitemapLog?.[url]?.file ?? `sitemaps/${sitemapFileName(url, this.sitemapFiles())}`;
               writeText(join(this.out, file), res.body);
             }
             this.noteSitemap(url, res.status, file);
@@ -341,18 +375,27 @@ class Crawler {
   }
 
   // Every sitemap the capture asked for, with its answer: sitemaps/index.json.
-  noteSitemap(url, status, file) {
+  // A skipped one (on another host) is { url, host, skipped } and never fetched.
+  noteSitemap(url, status, file, skipped = null) {
     const log = (this.state.sitemapLog ??= {});
-    log[url] = { status, file };
+    log[url] = skipped ?? { status, file };
+  }
+
+  // The file names under sitemaps/ already taken, each with the sitemap URL it holds.
+  sitemapFiles() {
+    const taken = new Map();
+    for (const [url, { file }] of Object.entries(this.state.sitemapLog ?? {})) if (file) taken.set(basename(file), url);
+    return taken;
   }
 
   // A sitemap robots.txt names (or a sitemap index lists) that did not answer 200 is a
-  // discoveryErrors entry with its status, never dropped silently.
+  // discoveryErrors entry with its status, never dropped silently (one skipped as another
+  // host's is not an error: it is listed in sitemaps/index.json).
   noteMissingSitemaps(urls) {
     const errors = (this.state.discoveryErrors ??= []);
     for (const url of urls) {
       const seen = this.state.sitemapLog?.[url];
-      if (seen && seen.status !== 200 && !errors.some((e) => e.url === url)) errors.push({ url, status: seen.status });
+      if (seen && !seen.skipped && seen.status !== 200 && !errors.some((e) => e.url === url)) errors.push({ url, status: seen.status });
     }
   }
 
@@ -371,6 +414,7 @@ class Crawler {
         const { robots, ...rest } = fp;
         this.state.fingerprint = rest;
         this.state.sitemapsDone = [];
+        for (const url of rest.otherHostSitemaps ?? []) this.noteSitemap(url, null, null, { host: new URL(url).host, skipped: OTHER_HOST });
         this.noteMissingSitemaps(rest.robotsSitemaps ?? []);
         this.enqueue('/', 'crawl');
         for (const seed of this.state.options.seeds ?? []) this.enqueue(seed, 'seed');
@@ -519,29 +563,55 @@ class Crawler {
     return 'done';
   }
 
-  // Follow one URL's redirects by hand. Returns { blocked, status }, { challenge, requeue[] } or
-  // { res, finalUrl, chain[] } (res.suspect set when the page is a suspected challenge).
+  // Where an answer leads: { next } to follow, or { end } (fetchChain's result) to stop there.
   // A hop to another site, a forbidden path, a file or a loop ends the chain without a request.
-  async fetchChain(start, item = null) {
+  redirectStep(res, current, chain, hop) {
+    const location = res.headers?.location;
+    if (res.status < 300 || res.status >= 400 || !location) return { end: { res, finalUrl: current, chain } };
+    chain.push({ url: current, status: res.status });
+    const next = new URL(location, current);
+    next.hash = '';
+    const offSite = bareHost(next) !== bareHost(new URL(this.state.canonicalOrigin));
+    const looped = chain.some((c) => c.url === next.href);
+    if (offSite || looped || forbidden(next) || notAPage(next) || hop === MAX_HOPS) {
+      return { end: { res: null, finalUrl: next.href, chain, offSite, looped } };
+    }
+    return { next: next.href };
+  }
+
+  // The network half of fetchChain, safe to run ahead of the queue: every hop's answer, up to
+  // where fetchChain stops whatever judge() decides (a signature challenge, a block, the end).
+  async fetchHops(start) {
+    const hops = [];
     const chain = [];
     let current = start;
     for (let hop = 0; hop <= MAX_HOPS; hop += 1) {
       const res = await this.fetch(current, { redirect: 'manual' });
+      hops.push({ url: current, res });
+      if (detectChallenge(res)?.kind === 'signature' || BLOCK_STATUSES.has(res.status)) break;
+      const step = this.redirectStep(res, current, chain, hop);
+      if (step.end) break;
+      current = step.next;
+    }
+    return hops;
+  }
+
+  // Follow one URL's redirects by hand, judging each answer in queue order. `hops` are the
+  // answers fetchHops already has; any hop it lacks is asked for here. Returns { blocked, status },
+  // { challenge, requeue[] } or { res, finalUrl, chain[] } (res.suspect set when the page is a
+  // suspected challenge).
+  async fetchChain(start, item = null, hops = []) {
+    const chain = [];
+    let current = start;
+    for (let hop = 0; hop <= MAX_HOPS; hop += 1) {
+      const res = hops[hop]?.url === current ? hops[hop].res : await this.fetch(current, { redirect: 'manual' });
       const verdict = this.judge(res, current, item);
       if (verdict?.stop) return { challenge: verdict.stop, requeue: verdict.requeue };
       if (verdict?.suspect) res.suspect = verdict.suspect;
       if (BLOCK_STATUSES.has(res.status)) return { blocked: true, status: res.status };
-      const location = res.headers?.location;
-      if (res.status < 300 || res.status >= 400 || !location) return { res, finalUrl: current, chain };
-      chain.push({ url: current, status: res.status });
-      const next = new URL(location, current);
-      next.hash = '';
-      const offSite = bareHost(next) !== bareHost(new URL(this.state.canonicalOrigin));
-      const looped = chain.some((c) => c.url === next.href);
-      if (offSite || looped || forbidden(next) || notAPage(next) || hop === MAX_HOPS) {
-        return { res: null, finalUrl: next.href, chain, offSite, looped };
-      }
-      current = next.href;
+      const step = this.redirectStep(res, current, chain, hop);
+      if (step.end) return step.end;
+      current = step.next;
     }
     return { res: null, finalUrl: current, chain };
   }
@@ -631,8 +701,7 @@ class Crawler {
     }
   }
 
-  async visitCss(item) {
-    const res = await this.fetch(item.url, { redirect: 'follow' });
+  async visitCss(item, res) {
     if (BLOCK_STATUSES.has(res.status)) return { blocked: true, status: res.status };
     const entry = this.state.css.entries.find((e) => e.href === item.url);
     entry.status = res.status;
@@ -680,14 +749,16 @@ class Crawler {
     if (!this.state.css) return 'done';
     return this.drain(
       this.state.css.queue,
-      (item) => this.visitCss(item),
+      (item) => this.fetch(item.url, { redirect: 'follow' }),
+      (item, res) => this.visitCss(item, res),
       (item, status) => {
         this.state.css.entries.find((e) => e.href === item.url).status = status;
       },
     );
   }
 
-  // Same-site script files (the theme's own JavaScript) in first-seen order, each fetched once
+  // Same-site script files (the theme's own JavaScript, module scripts, import map URLs and
+  // modulepreload files, each with the kind it was first seen as) in first-seen order, each fetched once
   // after the crawl (js/<n>.js). Vendor tags and inline code stay in the page HTML. Redirects are
   // followed by hand while they stay on the site's host; one that leaves it is recorded
   // "off-site" and not requested. A file over JS_MAX_BYTES is recorded "too-large", not saved.
@@ -705,7 +776,8 @@ class Crawler {
       if (!/^https?:$/.test(url.protocol) || bareHost(url) !== site || forbidden(url)) continue;
       let entry = js.entries.find((e) => e.src === script.src);
       if (!entry) {
-        entry = { file: `${js.entries.length + 1}.js`, src: script.src, pages: [], status: null };
+        const kind = script.kind ?? 'script';
+        entry = { file: `${js.entries.length + 1}.js`, src: script.src, kind, pages: [], status: null };
         js.entries.push(entry);
         js.queue.push({ url: script.src, attempts: 0 });
       }
@@ -713,22 +785,27 @@ class Crawler {
     }
   }
 
-  async visitJs(item) {
-    const entry = this.state.js.entries.find((e) => e.src === item.url);
+  // The network half of visitJs: the last answer, and offSite when a redirect leaves the host.
+  async fetchJsFile(item) {
     const site = bareHost(new URL(this.state.canonicalOrigin));
     let url = item.url;
-    let res;
     for (let hop = 0; ; hop += 1) {
-      res = await this.fetch(url, { raw: true, maxBytes: JS_MAX_BYTES });
-      if (BLOCK_STATUSES.has(res.status)) return { blocked: true, status: res.status };
+      const res = await this.fetch(url, { raw: true, maxBytes: JS_MAX_BYTES });
+      if (BLOCK_STATUSES.has(res.status)) return { res };
       const location = res.headers?.location;
-      if (res.status < 300 || res.status >= 400 || !location || hop >= JS_MAX_HOPS) break;
+      if (res.status < 300 || res.status >= 400 || !location || hop >= JS_MAX_HOPS) return { res };
       const next = new URL(location, url);
-      if (bareHost(next) !== site) {
-        entry.status = 'off-site';
-        return {};
-      }
+      if (bareHost(next) !== site) return { res, offSite: true };
       url = next.href;
+    }
+  }
+
+  async visitJs(item, { res, offSite }) {
+    const entry = this.state.js.entries.find((e) => e.src === item.url);
+    if (BLOCK_STATUSES.has(res.status)) return { blocked: true, status: res.status };
+    if (offSite) {
+      entry.status = 'off-site';
+      return {};
     }
     entry.status = res.status;
     if (res.status !== 200) return {};
@@ -742,7 +819,8 @@ class Crawler {
     if (!this.state.js) return 'done';
     return this.drain(
       this.state.js.queue,
-      (item) => this.visitJs(item),
+      (item) => this.fetchJsFile(item),
+      (item, fetched) => this.visitJs(item, fetched),
       (item, status) => {
         this.state.js.entries.find((e) => e.src === item.url).status = status;
       },
@@ -752,7 +830,8 @@ class Crawler {
   jsManifest() {
     return (this.state.js?.entries ?? []).map((e) => {
       const pages = [...e.pages].sort();
-      return e.status === 200 ? { file: e.file, src: e.src, pages } : { file: null, src: e.src, pages, status: e.status };
+      const kind = e.kind ?? 'script';
+      return e.status === 200 ? { file: e.file, src: e.src, kind, pages } : { file: null, src: e.src, kind, pages, status: e.status };
     });
   }
 
@@ -768,17 +847,24 @@ class Crawler {
     });
   }
 
-  // Archived paths on this host that the crawl never saw. Never fatal: a failure is noted and
-  // the file is written empty.
-  async wayback(endpoint) {
+  // Archived paths on this host that the crawl never saw. The archive is often slow or briefly
+  // down, so a failed listing is asked for once more after `retryMs`. Never fatal: a second
+  // failure is noted and the file is written empty.
+  async wayback(endpoint, retryMs = WAYBACK_RETRY_MS) {
     const known = new Set([...this.state.seen.map(pathOf), ...this.state.records.map((r) => r.path)]);
     const host = new URL(this.state.canonicalOrigin).host.replace(/^www\./i, '');
-    try {
-      const paths = await waybackPaths(host, { fetch: this.fetch, known, out: this.out, endpoint });
-      return { status: 'ok', paths: paths.length };
-    } catch (err) {
-      writeText(join(this.out, WAYBACK_FILE), '');
-      return { status: 'failed', error: err.message };
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        const paths = await waybackPaths(host, { fetch: this.fetch, known, out: this.out, endpoint });
+        return { status: 'ok', paths: paths.length };
+      } catch (err) {
+        if (attempt < WAYBACK_TRIES) {
+          await sleep(retryMs);
+          continue;
+        }
+        writeText(join(this.out, WAYBACK_FILE), '');
+        return { status: 'failed', error: err.message };
+      }
     }
   }
 
@@ -791,8 +877,8 @@ class Crawler {
     }
   }
 
-  async visit(item) {
-    const result = await this.fetchChain(item.url, item);
+  async visit(item, hops) {
+    const result = await this.fetchChain(item.url, item, hops);
     if (result.challenge) this.noteChallenge(item.url, result.challenge, { requeue: result.requeue });
     if (result.blocked || result.challenge) return result;
     const { res, chain } = result;
@@ -849,8 +935,12 @@ class Crawler {
     return found;
   }
 
-  async visitShortlink(item) {
-    const result = await this.fetchChain(new URL(item.url, this.state.canonicalOrigin).href);
+  shortlinkUrl(item) {
+    return new URL(item.url, this.state.canonicalOrigin).href;
+  }
+
+  async visitShortlink(item, hops) {
+    const result = await this.fetchChain(this.shortlinkUrl(item), null, hops);
     if (result.challenge) this.noteChallenge(item.url, result.challenge, { row: false });
     if (result.blocked || result.challenge) return result;
     const { res, chain } = result;
@@ -864,30 +954,53 @@ class Crawler {
   }
 
   // Work through a queue with per-URL retries and the block streak.
+  // Up to `concurrency` items at the front of the queue are fetched at once (fetchAhead: network
+  // only, no state), and each is recorded (visit) in queue order, so the capture is the same
+  // whatever the concurrency; blocks and challenges are judged in that order too.
   // A URL still blocked (403, 429, 503 or a network error) after its retries is given up:
   // recorded with that status and its attempts, and the run moves on. A URL counts towards the
   // streak only once its retries are used up: three different URLs used up in a row, with no
   // success between them, stop the run with those three back at the front of the queue (fresh
   // tries, `stops` counted). One that was already put back once is given up for good when it
   // fails again and no longer counts, so URLs that are down for good cannot stop every resume.
-  // A challenge stops at once, that URL back at the front of the queue.
+  // A challenge stops at once, that URL back at the front of the queue. Fetches still in flight
+  // when the run stops are dropped: their items are still in the queue for --resume.
   // Returns 'done', 'max', 'blocked' or 'challenge'.
-  async drain(queue, visit, giveUp, max = null) {
+  async drain(queue, fetchAhead, visit, giveUp, max = null) {
     let sinceSave = 0;
     let pending = []; // used up, given up once a success shows the site is still answering
+    const inFlight = new Map(); // queue item -> its fetchAhead promise
     const settle = () => {
       for (const { item, status } of pending) giveUp(item, status);
       pending = [];
+    };
+    const start = (item) => {
+      const retry = item.attempts > 0 && this.lastStarted === item.url;
+      this.lastStarted = item.url;
+      const wait = retry ? sleep(this.retryWait(item.attempts)) : Promise.resolve();
+      const fetched = wait.then(() => fetchAhead(item));
+      fetched.catch(() => {}); // a dropped fetch never fails the run; the awaited one still throws
+      inFlight.set(item, fetched);
     };
     while (queue.length > 0) {
       if (max && this.state.records.length >= max) {
         settle();
         return 'max';
       }
+      const room = max ? Math.max(1, Math.min(this.concurrency, max - this.state.records.length)) : this.concurrency;
+      for (const ahead of queue.slice(0, room)) if (!inFlight.has(ahead)) start(ahead);
       const item = queue.shift();
-      if (item.attempts > 0 && this.lastVisited === item.url) await sleep(this.retryWait(item.attempts));
-      this.lastVisited = item.url;
-      const result = await visit(item);
+      const fetched = await inFlight.get(item);
+      inFlight.delete(item);
+      const result = await visit(item, fetched);
+      // visit() may drop queued URLs it recorded through a redirect: forget their fetches. Such a
+      // URL (a redirect target already queued and fetched ahead) has then been requested twice;
+      // only the answer at the end of the chain is recorded. Likewise, when the run stops below,
+      // fetches still in flight are dropped unrecorded and their items stay queued for --resume.
+      if (inFlight.size > 0) {
+        const queued = new Set(queue);
+        for (const ahead of inFlight.keys()) if (!queued.has(ahead)) inFlight.delete(ahead);
+      }
       if (result.challenge) {
         queue.unshift(...(result.requeue ?? []), item);
         settle();
@@ -922,7 +1035,8 @@ class Crawler {
   async crawl(max) {
     const outcome = await this.drain(
       this.state.queue,
-      (item) => this.visit(item),
+      (item) => this.fetchHops(item.url),
+      (item, hops) => this.visit(item, hops),
       (item, status) => this.record(item.url, { status, headers: {}, body: '' }, item.kind, { attempts: item.attempts }),
       max,
     );
@@ -939,7 +1053,8 @@ class Crawler {
     }
     return this.drain(
       this.state.verifyQueue,
-      (item) => this.visitShortlink(item),
+      (item) => this.fetchHops(this.shortlinkUrl(item)),
+      (item, hops) => this.visitShortlink(item, hops),
       (item, status) => {
         this.state.shortlinkChecks[item.url] = { to: null, status, hops: [] };
       },
@@ -999,7 +1114,7 @@ class Crawler {
       icons: this.state.icons ?? {},
     });
     json('sitemaps/index.json', Object.entries(this.state.sitemapLog ?? {})
-      .map(([url, { status, file }]) => ({ url, status, file }))
+      .map(([url, e]) => (e.skipped ? { url, host: e.host, skipped: e.skipped } : { url, status: e.status, file: e.file }))
       .sort(byKey('url')));
     json('css/manifest.json', this.cssManifest());
     json('js/manifest.json', this.jsManifest());
@@ -1080,8 +1195,8 @@ async function main() {
   mkdirSync(out, { recursive: true });
 
   http.resetBlocked();
-  const fetch = (url, options) => fetchPaced(url, { ...options, delayMs: args.delayMs, ua: args.ua, trusted: [args.origin, process.env.CAPTURE_WAYBACK_CDX] });
-  const crawler = new Crawler(state, { out, fetch, delayMs: args.delayMs });
+  const fetch = (url, options) => fetchPaced(url, { ...options, delayMs: args.delayMs, concurrency: args.concurrency, ua: args.ua, trusted: [args.origin, process.env.CAPTURE_WAYBACK_CDX] });
+  const crawler = new Crawler(state, { out, fetch, delayMs: args.delayMs, concurrency: args.concurrency });
   // Seeds given on --resume: once the home page is known they join the queue here (before that,
   // discovery queues every seed in the options), and a finished capture crawls again for them.
   if (state.fingerprint && newSeeds.length > 0) {
@@ -1133,7 +1248,8 @@ async function main() {
   if (outcome === 'done' && verify) outcome = await crawler.verifyShortlinks();
   if (args.noWayback) state.options.noWayback = true;
   if (outcome === 'done' && !state.options.noWayback && !state.wayback) {
-    state.wayback = await crawler.wayback(process.env.CAPTURE_WAYBACK_CDX || CDX_ENDPOINT);
+    const retryMs = Number(process.env.CAPTURE_WAYBACK_RETRY_MS);
+    state.wayback = await crawler.wayback(process.env.CAPTURE_WAYBACK_CDX || CDX_ENDPOINT, Number.isFinite(retryMs) && retryMs >= 0 ? retryMs : undefined);
   }
   if (outcome === 'challenge') stopChallenge();
   const inventory = crawler.writeOutputs({ finished: outcome === 'done' });

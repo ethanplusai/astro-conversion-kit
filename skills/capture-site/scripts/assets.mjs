@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Brand assets: the logo, the favicon, the apple-touch-icon and every web font, saved byte for
 // byte into <capture>/assets/ so the build can use the originals.
-// Sources: <link rel=icon|apple-touch-icon> and the first <img> inside <header> or .logo on the
-// home page snapshot, and every @font-face src in the stylesheets under <capture>/css/.
+// Sources: <link rel=icon|apple-touch-icon> and the logo (findLogo: in <header> first, then in
+// other logo elements, an image or inline <svg> named logo, the home link's image, else the
+// first <img>) on the home page snapshot, and every @font-face src in the stylesheets under <capture>/css/.
 // Requests are paced like the crawl; fonts already saved are kept, so a stopped run resumes.
 // assets/index.json lists every asset looked for, saved or missing.
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
@@ -10,19 +11,25 @@ import { basename, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as csstree from 'css-tree';
 import { assertNodeVersion } from './lib/node-version.mjs';
+import { serializeOuter } from 'parse5';
 import { attr, children, findAll, isElement, parseHtml } from '../../parity-gates/scripts/lib/html.mjs';
-import { BLOCK_LIMIT, DEFAULT_DELAY_MS, DEFAULT_UA, fetchPaced, http, MAX_FILE_BYTES } from './lib/http.mjs';
+import { BLOCK_LIMIT, DEFAULT_CONCURRENCY, DEFAULT_DELAY_MS, DEFAULT_UA, fetchPaced, http, MAX_FILE_BYTES, pacing, POLITE_DELAY_MS } from './lib/http.mjs';
 
-const USAGE = `Usage: node assets.mjs --capture <dir> [--delay <ms>] [--ua "<string>"] [--max-file-bytes <n>]
+const USAGE = `Usage: node assets.mjs --capture <dir> [--delay <ms>] [--concurrency <n>] [--polite] [--ua "<string>"] [--max-file-bytes <n>]
 
 Save the site's logo, favicon, apple-touch-icon and web fonts into <dir>/assets/
-(logo.*, favicon.*, apple-touch-icon.*, fonts/*). The logo is the first <img> inside
-<header> or .logo on the home page; the icons come from its <link rel=icon> and
+(logo.*, favicon.*, apple-touch-icon.*, fonts/*). The logo is found on the home page inside
+<header> first, then inside other elements whose class or id names a logo: an <img> whose src,
+alt, class or id says "logo", else an inline <svg> that does (saved as logo.svg), else the
+<img> in the link to the home page, else the first <img>; the icons come from its <link rel=icon> and
 <link rel=apple-touch-icon>, the web manifest from its <link rel=manifest>; the fonts are every @font-face src in <dir>/css/ (written by
 capture.mjs; without it, fonts are reported as not captured).
 
   --capture <dir>   the capture folder written by capture.mjs
-  --delay <ms>      wait between requests (default ${DEFAULT_DELAY_MS})
+  --delay <ms>      time between request starts on a host (default ${DEFAULT_DELAY_MS})
+  --concurrency <n> requests in flight on a host at once (default ${DEFAULT_CONCURRENCY})
+  --polite          one request at a time, ${POLITE_DELAY_MS} ms apart; --delay and
+                    --concurrency override it
   --ua "<string>"   user agent (default: a desktop Chrome)
   --max-file-bytes <n>  largest file to save (default ${MAX_FILE_BYTES}, 2 GB); a larger one is
                     listed with status "too-large"
@@ -69,20 +76,70 @@ function imageSrc(img) {
   return LAZY_SRC.map((name) => attr(img, name)).find(Boolean) ?? null;
 }
 
-// The first <img> (document order) inside a <header> or an element with class "logo".
-function logoImage(document) {
-  let found = null;
-  const visit = (node, inside) => {
-    if (found) return;
-    const here = inside || node.tagName === 'header' || (isElement(node) && classTokens(node).includes('logo'));
-    if (here && node.tagName === 'img' && imageSrc(node)) {
-      found = node;
+// "logo" or "logos" as a word of a name: site-logo.svg, custom-logo, "Brand logo", headerLogo
+// (a camelCase word start counts), not "logout" or "catalogue".
+const LOGO = /(^|[^A-Za-z]|[a-z](?=L))[Ll][Oo][Gg][Oo][Ss]?([^A-Za-z]|$)/;
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const XLINK_NS = 'http://www.w3.org/1999/xlink';
+const mentionsLogo = (node, names) => names.some((name) => LOGO.test(attr(node, name) ?? ''));
+const textContent = (node) => (node.nodeName === '#text' ? node.value : children(node).map(textContent).join(''));
+const SHAPES = new Set(['path', 'rect', 'circle', 'ellipse', 'polygon', 'polyline', 'line', 'text', 'image']);
+
+// The site's logo on the home page. Looked for first inside <header>, then inside any other
+// element whose class or id names a logo (.logo, .site-logo, #logo-wrap; a footer's sponsor
+// logos only count when the header has no image at all). In each, in this order of preference:
+// an <img> whose src, alt, class or id names a logo; an inline <svg> with a logo in its class,
+// id, aria-label or <title>; the first <img> inside a link to the home page; the first <img>.
+// Returns { img }, { svg } or null.
+function findLogo(document, homeUrl) {
+  const home = new URL(homeUrl);
+  const isHome = (href) => {
+    const url = resolveUrl(href, homeUrl);
+    if (!url) return false;
+    const target = new URL(url);
+    return target.host.replace(/^www\./i, '') === home.host.replace(/^www\./i, '') && target.pathname === '/';
+  };
+  const groups = { header: { images: [], svgs: [] }, other: { images: [], svgs: [] } };
+  const visit = (node, scope, inHome) => {
+    let here = scope;
+    if (node.tagName === 'header') here = 'header';
+    else if (!here && isElement(node) && mentionsLogo(node, ['class', 'id'])) here = 'other';
+    const linked = inHome || (node.tagName === 'a' && isHome(attr(node, 'href')));
+    if (here && node.tagName === 'img' && imageSrc(node)) groups[here].images.push({ node, linked });
+    if (node.tagName === 'svg') {
+      if (here) groups[here].svgs.push(node);
       return;
     }
-    for (const child of children(node)) visit(child, here);
+    for (const child of children(node)) visit(child, here, linked);
   };
-  visit(document, false);
-  return found;
+  visit(document, null, false);
+  for (const { images, svgs } of [groups.header, groups.other]) {
+    const named = images.find(({ node }) => LOGO.test(imageSrc(node)) || mentionsLogo(node, ['alt', 'class', 'id']));
+    if (named) return { img: named.node };
+    const svg = svgs.find((node) => mentionsLogo(node, ['class', 'id', 'aria-label'])
+      || findAll(node, (n) => n.tagName === 'title').some((t) => LOGO.test(textContent(t))));
+    if (svg) return { svg };
+    const linked = images.find((i) => i.linked);
+    if (linked) return { img: linked.node };
+    if (images.length) return { img: images[0].node };
+  }
+  return null;
+}
+
+// An inline <svg> that draws nothing itself: only <use> references to a symbol elsewhere on the page.
+const onlyUses = (node) => findAll(node, (n) => n.tagName === 'use').length > 0 && findAll(node, (n) => SHAPES.has(n.tagName)).length === 0;
+
+// An inline <svg> as a file of its own: the namespaces a standalone file needs are added.
+function svgFile(node) {
+  const has = (name) => node.attrs.some((a) => a.name === name);
+  node.attrs = [...node.attrs];
+  if (!has('xmlns')) node.attrs.push({ name: 'xmlns', value: SVG_NS });
+  let markup = serializeOuter(node);
+  if (/\sxlink:/.test(markup) && !has('xmlns:xlink')) {
+    node.attrs.push({ name: 'xmlns:xlink', value: XLINK_NS });
+    markup = serializeOuter(node);
+  }
+  return `${markup.replace(/&nbsp;/g, '&#160;')}\n`;
 }
 
 function iconHref(document, rels) {
@@ -137,7 +194,7 @@ function extensionFor(url, contentType) {
 }
 
 function parseArgs(argv) {
-  const args = { capture: null, delayMs: DEFAULT_DELAY_MS, ua: DEFAULT_UA, maxFileBytes: MAX_FILE_BYTES, help: false };
+  const args = { capture: null, delayMs: null, concurrency: null, polite: false, ua: DEFAULT_UA, maxFileBytes: MAX_FILE_BYTES, help: false };
   const value = (i) => (i < argv.length && !argv[i].startsWith('--') ? argv[i] : null);
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -147,13 +204,16 @@ function parseArgs(argv) {
     else if (arg === '--delay' && value(i + 1)) {
       args.delayMs = Number(argv[(i += 1)]);
       if (!Number.isInteger(args.delayMs) || args.delayMs < 0) return { error: '--delay needs a whole number' };
-    } else if (arg === '--max-file-bytes' && value(i + 1)) {
+    } else if (arg === '--concurrency' && value(i + 1)) {
+      args.concurrency = Number(argv[(i += 1)]);
+      if (!Number.isInteger(args.concurrency) || args.concurrency < 1) return { error: '--concurrency needs a whole number of at least 1' };
+    } else if (arg === '--polite') args.polite = true; else if (arg === '--max-file-bytes' && value(i + 1)) {
       args.maxFileBytes = Number(argv[(i += 1)]);
       if (!Number.isInteger(args.maxFileBytes) || args.maxFileBytes < 1) return { error: '--max-file-bytes needs a whole number of bytes' };
     } else return { error: `unknown or incomplete option ${arg}` };
   }
   if (!args.help && !args.capture) return { error: '--capture <dir> is required' };
-  return args;
+  return { ...args, ...pacing(args) };
 }
 
 async function main() {
@@ -205,7 +265,7 @@ async function main() {
     // Streamed to the known name, or to a temporary one until the type gives the extension.
     const download = known ?? join(out, `.${stem}.download`);
     const res = await fetchPaced(url, {
-      delayMs: args.delayMs, ua: args.ua, redirect: 'follow', trusted: [origin], maxBytes: args.maxFileBytes, toFile: download,
+      delayMs: args.delayMs, concurrency: args.concurrency, ua: args.ua, redirect: 'follow', trusted: [origin], maxBytes: args.maxFileBytes, toFile: download,
     });
     if (http.blocked >= BLOCK_LIMIT) throw new Blocked();
     if (res.status !== 200) {
@@ -232,9 +292,15 @@ async function main() {
       for (const kind of ['logo', 'favicon', 'apple-touch-icon', 'manifest']) absent(kind, 'not captured (no page snapshot answered 200)');
     } else {
       const document = parseHtml(readFileSync(join(dir, home.snapshot), 'utf8'));
-      const img = logoImage(document);
+      const logo = findLogo(document, home.url);
+      if (logo?.svg) {
+        mkdirSync(out, { recursive: true });
+        writeFileSync(join(out, 'logo.svg'), svgFile(logo.svg));
+        const note = onlyUses(logo.svg) ? 'inline <svg> in the home page; uses a symbol defined elsewhere on the page' : 'inline <svg> in the home page';
+        entries.push({ kind: 'logo', url: null, file: 'assets/logo.svg', status: 200, note });
+      }
       const targets = [
-        ['logo', img ? resolveUrl(imageSrc(img), home.url) : null, 'none (no <img> inside <header> or .logo)'],
+        ...(logo?.svg ? [] : [['logo', logo?.img ? resolveUrl(imageSrc(logo.img), home.url) : null, 'none (no <img> or logo <svg> inside <header> or a logo element)']]),
         ['favicon', resolveUrl(iconHref(document, ['icon']), home.url), 'none on the site'],
         ['apple-touch-icon', resolveUrl(iconHref(document, ['apple-touch-icon', 'apple-touch-icon-precomposed']), home.url), 'none on the site'],
         ['manifest', resolveUrl(iconHref(document, ['manifest']), home.url), 'none on the site'],

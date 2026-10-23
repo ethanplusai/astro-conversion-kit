@@ -22,7 +22,8 @@
     "review:diff": "node scripts/review/diff.mjs",
     "review:styles": "node scripts/review/styles.mjs",
     "review:sheet": "node scripts/review/sheet.mjs",
-    "review:check": "node scripts/review/check.mjs --review review"
+    "review:check": "node scripts/review/check.mjs --review review",
+    "review:serve": "node scripts/review-serve.mjs"
   },
   "devDependencies": {}
 }

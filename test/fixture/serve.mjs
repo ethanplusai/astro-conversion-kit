@@ -1,5 +1,8 @@
 // Fixture server: a static imitation of a WordPress site for tests.
-// startFixture({ port, blockAfter, delayMs, root, alwaysStatus, challenge }) -> { origin, requests, close() }
+// startFixture({ port, blockAfter, delayMs, pathDelays, root, alwaysStatus, challenge })
+//   -> { origin, requests, stats, close() }
+// pathDelays maps a path to the delay in ms its answers take (instead of delayMs);
+// stats.maxInFlight is the most requests the server held open at once (stats.reset() starts over);
 // challenge: 'siteground' | 'cloudflare' answers every request with that host's bot challenge
 // (SiteGround: a 202 page refreshing to /.well-known/sgcaptcha/; Cloudflare: a 403 "Just a
 // moment..." page with cf-mitigated: challenge);
@@ -167,15 +170,28 @@ function respond(req, origin, site) {
   }
 }
 
-export function startFixture({ port = 0, blockAfter = Infinity, delayMs = 0, root = SITE, alwaysStatus = {}, challenge = null } = {}) {
+export function startFixture({ port = 0, blockAfter = Infinity, delayMs = 0, pathDelays = {}, root = SITE, alwaysStatus = {}, challenge = null } = {}) {
   if (challenge && !CHALLENGES[challenge]) throw new Error(`unknown challenge ${challenge}`);
   const site = resolve(root);
   let requests = 0;
   const log = [];
+  let inFlight = 0;
+  const stats = {
+    maxInFlight: 0,
+    reset() {
+      stats.maxInFlight = inFlight;
+    },
+  };
   const server = createServer((req, res) => {
     requests += 1;
     log.push(req.url);
+    inFlight += 1;
+    stats.maxInFlight = Math.max(stats.maxInFlight, inFlight);
+    res.once('close', () => {
+      inFlight -= 1;
+    });
     const blocked = requests > blockAfter;
+    const wait = pathDelays[req.url.split('?')[0]] ?? delayMs;
     setTimeout(() => {
       const origin = `http://${req.headers.host ?? `127.0.0.1:${server.address().port}`}`;
       const fixed = alwaysStatus[new URL(req.url, origin).pathname];
@@ -189,7 +205,7 @@ export function startFixture({ port = 0, blockAfter = Infinity, delayMs = 0, roo
       const payload = Buffer.isBuffer(response.body) ? response.body : Buffer.from(response.body);
       res.writeHead(response.status, { ...response.headers, 'Content-Length': payload.length });
       res.end(req.method === 'HEAD' ? undefined : payload);
-    }, delayMs);
+    }, wait);
   });
 
   return new Promise((resolveStart, rejectStart) => {
@@ -199,6 +215,7 @@ export function startFixture({ port = 0, blockAfter = Infinity, delayMs = 0, roo
       resolveStart({
         origin,
         requests: log,
+        stats,
         close: () =>
           new Promise((resolveClose) => {
             server.closeAllConnections();

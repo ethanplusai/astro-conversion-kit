@@ -93,8 +93,10 @@ embeds every image as data, so one file opens anywhere, and it can be tens of me
 
 Read `references/review-procedure.md` before the first run. In short:
 
-1. **Serve the new site.** `npm run build && npm run preview` (closest to production) or
-   `npm run dev` while iterating. Note the origin, e.g. `http://localhost:4321`.
+1. **Serve the new site.** `npm run build`, then serve the build with `npm run review:serve`
+   (it applies `vercel.json` like staging does, so media and scripts rewritten to another origin
+   load) and use that origin, e.g. `http://localhost:4321`, for every `review:*` step.
+   `npm run preview` is only for sites whose media is in the repo; `npm run dev` while iterating.
 2. **Shoot new** with the same `--routes` and widths the live shots used, so folder names match:
 
        npm run review:shoot -- --base http://localhost:4321 --routes capture/templates.json --widths 390,768,1440 --out review/new --delay 0
@@ -103,7 +105,7 @@ Read `references/review-procedure.md` before the first run. In short:
 
        npm run review:diff -- --a capture/screens/live --b review/new --out review/diff
 
-4. **Styles.** It loads the live site, so keep the default 2500 ms pacing. It defaults to 390
+4. **Styles.** It loads the live site one page at a time, 500 ms apart by default. It defaults to 390
    and 1440, so pass the widths to cover 768 too:
 
        npm run review:styles -- --live https://www.example.com --new http://localhost:4321 --routes capture/templates.json --widths 390,768,1440 --out review/styles.json

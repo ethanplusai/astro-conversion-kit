@@ -14,7 +14,7 @@ import { stateRules } from './lib/state-selectors.mjs';
 
 const MAX_TOGGLES = 20;
 const HELP = `Usage: node css-coverage.mjs --base <origin> --routes <list|inventory.json> --out coverage.json
-                           [--widths 390,768,1440] [--delay 2500]
+                           [--widths 390,768,1440] [--delay 500]
 
 Loads every route at every width in Chromium with CSS coverage on, waits for the
 load event and a short settle, hovers and focuses the first a, button and input
@@ -33,7 +33,9 @@ stateRanges are the unused rules that style an interaction state (a class such a
 with its state and pseudo parts taken out) is on a covered page: a state no click
 reached. css-prune.mjs keeps them. Inline
 <style> blocks with the same text share one inline:<n> key and list the pages
-they appear on. Analytics, tag, pixel and chat hosts are blocked, so their
+they appear on. A block is known by its text (trimmed), so one that ends in a
+/*# sourceURL=<file> */ comment, which Chromium files under that file's URL,
+is still an inline block. Analytics, tag, pixel and chat hosts are blocked, so their
 injected styles are not recorded and the loads do not count as visits.
 
   --base     origin to load, e.g. https://www.example.com
@@ -41,7 +43,7 @@ injected styles are not recorded and the loads do not count as visits.
              records with a status other than 200 are skipped)
   --widths   comma list of viewport widths (default 390,768,1440)
   --out      coverage file to write
-  --delay    milliseconds between page loads (default 2500); doubled on 429/503
+  --delay    milliseconds between page loads (default 500); doubled on 429/503
 
 Exit codes: 0 written, 1 a route failed to load (the rest are still written),
 2 usage or environment error, 3 stopped after 3 consecutive blocked responses
@@ -95,7 +97,7 @@ function parse(argv) {
         routes: { type: 'string' },
         widths: { type: 'string', default: '390,768,1440' },
         out: { type: 'string' },
-        delay: { type: 'string', default: '2500' },
+        delay: { type: 'string', default: '500' },
         help: { type: 'boolean', default: false },
       },
     }));
@@ -190,6 +192,20 @@ async function addStateRanges(page, entries) {
   });
 }
 
+// The text of every <style> element on the page, in document order.
+function styleBlockTexts() {
+  return [...document.querySelectorAll('style')].map((style) => style.textContent);
+}
+
+// Whether a coverage entry is one of the page's <style> blocks. Chromium reports an inline block
+// under the URL its /*# sourceURL=<file> */ comment names (WordPress 6.9+ ends every block with
+// one), so a block is known by its text, trimmed as the capture stores it, whatever its url.
+export function isInlineEntry({ url, text }, pageUrl, styleTexts = []) {
+  if (!url || url === pageUrl) return true;
+  const trimmed = text.trim();
+  return Boolean(trimmed) && styleTexts.some((block) => block.trim() === trimmed);
+}
+
 // One route at one width: returns { status, entries } or { status: 0, error }.
 async function coverRoute(page, url) {
   await page.coverage.startCSSCoverage({ resetOnNavigation: false });
@@ -206,14 +222,15 @@ async function coverRoute(page, url) {
   if (clicked) await sleep(SETTLE_MS);
   const entries = await page.coverage.stopCSSCoverage();
   await addStateRanges(page, entries);
-  return { status: response ? response.status() : 0, entries, pageUrl: page.url() };
+  const styleTexts = await page.evaluate(styleBlockTexts).catch(() => []);
+  return { status: response ? response.status() : 0, entries, pageUrl: page.url(), styleTexts };
 }
 
 // Folds one page's coverage entries into the merged result.
-function addEntries(result, inlineKeys, entries, pageUrl, path) {
+function addEntries(result, inlineKeys, entries, pageUrl, path, styleTexts) {
   for (const { url, text, ranges, stateRanges = [] } of entries) {
     const used = ranges.map(({ start, end }) => [start, end]);
-    const inline = !url || url === pageUrl;
+    const inline = isInlineEntry({ url, text }, pageUrl, styleTexts);
     let key = url;
     if (inline) {
       if (!inlineKeys.has(text)) inlineKeys.set(text, `inline:${inlineKeys.size + 1}`);
@@ -263,7 +280,7 @@ async function cover({ base, routes, widths, out, delay }) {
             failed += 1;
             console.error(`failed: ${url} at ${width}: HTTP ${outcome.status}`);
           } else {
-            addEntries(result, inlineKeys, outcome.entries, outcome.pageUrl, path);
+            addEntries(result, inlineKeys, outcome.entries, outcome.pageUrl, path, outcome.styleTexts);
             console.log(`covered ${path} at ${width}`);
           }
           break;

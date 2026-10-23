@@ -32,11 +32,15 @@ path in path, the baseline byte count in from and the built one in to (to "" for
 build drops).
 --paths selects a media file when its own path matches or a page that references it does
 (baseline media.json referencedBy), so --paths "/,/about/" checks the media of those pages.
+An entry with downloaded: false (a size only the REST media list names, which media.mjs lists
+but does not download by default) is not checked and the summary counts it as skipped
+("unreferenced size"); it is never a failure.
 `;
 
 // Whether --paths selects a media file: by its own path, or by a page that references it.
 const selected = (m, paths) => paths(m.path) || (m.referencedBy ?? []).some((page) => paths(page));
 const FROM_LIVE = 'release build may not serve media from the live site';
+const UNREFERENCED = 'unreferenced size';
 
 const decode = (value) => {
   try {
@@ -109,11 +113,22 @@ function main() {
   const mode = plan?.mode ?? 'repo';
   if (!MODES.has(mode)) fail(`${args.mediaPlan}: mode "${mode}" is not one of ${[...MODES].join('|')}`);
   if (!existsSync(join(args.baseline, 'media.json'))) fail(`not found: ${join(args.baseline, 'media.json')}`);
-  const media = readJson(join(args.baseline, 'media.json'));
+  const listed = readJson(join(args.baseline, 'media.json'));
+  // A size the capture listed but never downloaded (media.mjs --sizes referenced) has nothing to
+  // compare: it is skipped and counted, never a failure.
+  const unreferenced = listed.filter((m) => m.downloaded === false && selected(m, args.paths)).length;
+  const media = listed.filter((m) => m.downloaded !== false);
   const items = media.filter((m) => selected(m, args.paths));
+  const withUnreferenced = (results) => {
+    if (!unreferenced) return results;
+    const skipped = (results.skipped ?? 0) + unreferenced;
+    const skipReason = [results.skipReason, UNREFERENCED].filter(Boolean).join('; ');
+    const note = `skipped: ${unreferenced} unreferenced ${unreferenced === 1 ? 'size' : 'sizes'} (listed in media.json, not downloaded)`;
+    return { ...results, skipped, skipReason, notes: [...(results.notes ?? []), note] };
+  };
   if (mode === 'live-temporary' && process.env.PUBLIC_INDEXABLE === 'true') {
     const failures = items.map((m) => ({ path: m.path, field: 'media', expected: 'served by the build', actual: FROM_LIVE }));
-    return report(NAME, { checked: items.length, failures }, { json: args.json });
+    return report(NAME, withUnreferenced({ checked: items.length, failures }), { json: args.json });
   }
   // repo mode serves everything from dist; the other modes only what lies outside the prefix.
   const inside = mode === 'repo' ? () => false : underPrefix(plan?.prefix);
@@ -136,7 +151,7 @@ function main() {
   const checked = mode === 'live-temporary' ? fromDist : media;
   const results = checkMedia({ media: checked, sizeOf, exceptions: gateExceptions(NAME, args), paths: args.paths });
   if (mode === 'live-temporary') Object.assign(results, { skipped: items.length - results.checked, skipReason: 'served from live' });
-  return report(NAME, results, { json: args.json });
+  return report(NAME, withUnreferenced(results), { json: args.json });
 }
 
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {

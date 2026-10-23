@@ -48,7 +48,7 @@ function startCdx(paths = ['/old-team/', '/2019/05/summer-sale/']) {
 // Runs capture.mjs with --no-wayback unless `wayback` names a CDX endpoint to use instead.
 async function capture(args, { wayback } = {}) {
   try {
-    const env = wayback ? { ...process.env, CAPTURE_WAYBACK_CDX: wayback } : process.env;
+    const env = wayback ? { ...process.env, CAPTURE_WAYBACK_CDX: wayback, CAPTURE_WAYBACK_RETRY_MS: '0' } : process.env;
     const flags = wayback || args.includes('--help') || args.includes('--no-wayback') ? [] : ['--no-wayback'];
     const { stdout, stderr } = await exec(process.execPath, [SCRIPT, ...args, ...flags], { env });
     return { code: 0, stdout, stderr };
@@ -513,6 +513,45 @@ test('a Wayback failure is recorded in meta.json and never fails the capture; --
   assert.deepEqual(readJson(skipped, 'meta.json').wayback, { status: 'skipped' });
 });
 
+test('a Wayback listing that fails once is asked again once before it is recorded as failed', async () => {
+  const site = await startStub({ '/': { body: '<html><head><title>Home</title></head><body>home</body></html>' } });
+  let asked = 0;
+  let failures = 1; // the next answers that fail
+  const flaky = createServer((req, res) => {
+    asked += 1;
+    const host = new URL(req.url, 'http://cdx').searchParams.get('url').replace(/\/\*$/, '');
+    if (failures > 0) {
+      failures -= 1;
+      res.writeHead(504);
+      res.end();
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify([['original'], [`http://${host}/old/`]]));
+  });
+  await new Promise((done) => flaky.listen(0, '127.0.0.1', done));
+  try {
+    const out = tempDir();
+    const run = await capture([site.origin, '--out', out, '--delay', '0'], { wayback: `http://127.0.0.1:${flaky.address().port}/cdx` });
+    assert.equal(run.code, 0, run.stderr);
+    assert.equal(asked, 2, 'one retry');
+    assert.deepEqual(readJson(out, 'meta.json').wayback, { status: 'ok', paths: 1 });
+    assert.equal(readFileSync(join(out, 'wayback-unverified.txt'), 'utf8'), '/old/\n');
+
+    asked = 0;
+    failures = 2; // both tries fail: recorded as failed, the capture still succeeds
+    const failed = tempDir();
+    const again = await capture([site.origin, '--out', failed, '--delay', '0'], { wayback: `http://127.0.0.1:${flaky.address().port}/cdx` });
+    assert.equal(again.code, 0, again.stderr);
+    assert.equal(asked, 2, 'asked twice, never a third time');
+    assert.equal(readJson(failed, 'meta.json').wayback.status, 'failed');
+    assert.match(readJson(failed, 'meta.json').wayback.error, /504/);
+  } finally {
+    await site.close();
+    await new Promise((done) => { flaky.closeAllConnections(); flaky.close(done); });
+  }
+});
+
 test('stylesheets and <style> blocks are saved under css/ with a manifest', async () => {
   const shared = '<style>.a { color: red; }</style>';
   const page = (styles) =>
@@ -641,6 +680,25 @@ test('@import is followed 5 levels deep; a deeper sheet is listed "too-deep" and
   }
 });
 
+test('module scripts, the import map and modulepreload files land in js/ with their kind', () => {
+  const manifest = readJson(full, 'js/manifest.json');
+  const theme = `${fixture.origin}/wp-content/themes/fixture/js`;
+  const modules = `${fixture.origin}/wp-includes/js/script-modules`;
+  assert.deepEqual(manifest.map(({ src, kind, pages }) => ({ src, kind, pages })), [
+    { src: `${modules}/interactivity/index.min.js?ver=6.6.2`, kind: 'importmap', pages: ['/'] },
+    { src: `${theme}/util.js`, kind: 'importmap', pages: ['/'] },
+    { src: `${theme}/view.js?ver=1.4.2`, kind: 'module', pages: ['/'] },
+    { src: `${theme}/reveal.js?ver=1.4.2`, kind: 'script', pages: manifest[3].pages },
+    { src: `${modules}/a11y/index.min.js?ver=6.6.2`, kind: 'modulepreload', pages: ['/'] },
+  ]);
+  for (const entry of manifest) {
+    assert.ok(entry.file, entry.src);
+    assert.ok(readFileSync(join(full, 'js', entry.file), 'utf8').length > 0, entry.src);
+  }
+  assert.match(readFileSync(join(full, 'js', manifest[0].file), 'utf8'), /export const store/);
+  assert.match(readFileSync(join(full, 'js', manifest[2].file), 'utf8'), /@wordpress\/interactivity/);
+});
+
 test('first-party <script src> files are saved under js/ with a manifest; vendors and inline code are not', async () => {
   const page = (extra) =>
     `<html><head><title>Page</title><script src="https://www.googletagmanager.com/gtag/js?id=G-X1"></script><script>var inline = 1;</script></head>`
@@ -655,8 +713,8 @@ test('first-party <script src> files are saved under js/ with a manifest; vendor
     const run = await capture([stub.origin, '--out', out, '--delay', '0']);
     assert.equal(run.code, 0, run.stderr);
     assert.deepEqual(readJson(out, 'js/manifest.json'), [
-      { file: '1.js', src: `${stub.origin}/js/site.js?ver=3`, pages: ['/', '/one/'] },
-      { file: null, src: `${stub.origin}/js/gone.js`, pages: ['/one/'], status: 404 },
+      { file: '1.js', src: `${stub.origin}/js/site.js?ver=3`, kind: 'script', pages: ['/', '/one/'] },
+      { file: null, src: `${stub.origin}/js/gone.js`, kind: 'script', pages: ['/one/'], status: 404 },
     ]);
     assert.equal(readFileSync(join(out, 'js/1.js'), 'utf8'), 'document.body.className += " js";');
     assert.deepEqual(readdirSync(join(out, 'js')).sort(), ['1.js', 'manifest.json']);
@@ -680,9 +738,9 @@ test('js/: an on-site redirect is followed, an off-site one is not, a file over 
     const run = await capture([stub.origin, '--out', out, '--delay', '0']);
     assert.equal(run.code, 0, run.stderr);
     assert.deepEqual(readJson(out, 'js/manifest.json'), [
-      { file: '1.js', src: `${stub.origin}/js/moved.js`, pages: ['/'] },
-      { file: null, src: `${stub.origin}/js/away.js`, pages: ['/'], status: 'off-site' },
-      { file: null, src: `${stub.origin}/js/huge.js`, pages: ['/'], status: 'too-large' },
+      { file: '1.js', src: `${stub.origin}/js/moved.js`, kind: 'script', pages: ['/'] },
+      { file: null, src: `${stub.origin}/js/away.js`, kind: 'script', pages: ['/'], status: 'off-site' },
+      { file: null, src: `${stub.origin}/js/huge.js`, kind: 'script', pages: ['/'], status: 'too-large' },
     ]);
     assert.equal(readFileSync(join(out, 'js/1.js'), 'utf8'), 'var moved = 1;');
     assert.deepEqual(readdirSync(join(out, 'js')).sort(), ['1.js', 'manifest.json']);
@@ -934,6 +992,78 @@ test('every sitemap robots.txt names is fetched, saved under sitemaps/ and crawl
   }
 });
 
+test('a sitemap robots.txt names on another host is recorded as skipped, never fetched, and leaves the site files intact', () => {
+  assert.match(readFileSync(join(full, 'robots.txt'), 'utf8'), /^Sitemap: http:\/\/other\.example\.com\/sitemap_index\.xml$/m);
+  const index = readJson(full, 'sitemaps/index.json');
+  assert.deepEqual(index.find((e) => e.url.startsWith('http://other.example.com/')), {
+    url: 'http://other.example.com/sitemap_index.xml', host: 'other.example.com', skipped: 'other host',
+  });
+  const own = index.filter((e) => e.url.startsWith(fixture.origin) && e.file);
+  assert.deepEqual(own.map((e) => e.file).sort(), [
+    'sitemaps/category-sitemap.xml', 'sitemaps/page-sitemap.xml', 'sitemaps/post-sitemap.xml', 'sitemaps/sitemap_index.xml',
+  ]);
+  assert.match(readFileSync(join(full, 'sitemaps/sitemap_index.xml'), 'utf8'), new RegExp(`${fixture.origin}/page-sitemap\\.xml`));
+  assert.ok(!readJson(full, 'meta.json').discoveryErrors.some((e) => e.url.includes('other.example.com')), 'a skipped sitemap is not an error');
+});
+
+test('a foreign sitemap named first in robots.txt is skipped, never requested, and the site sitemap is still read', async () => {
+  const xml = (body) => (origin) => ({ headers: { 'Content-Type': 'application/xml' }, body: body(origin) });
+  const titled = (title) => `<html><head><title>${title}</title></head><body>${title}</body></html>`;
+  const other = await startStub({
+    '/sitemap_index.xml': xml(() => '<sitemapindex><sitemap><loc>http://other.example.com/page-sitemap.xml</loc></sitemap></sitemapindex>'),
+  });
+  const otherUrl = `${other.origin.replace('127.0.0.1', 'localhost')}/sitemap_index.xml`;
+  const stub = await startStub({
+    '/': { body: titled('Home') },
+    '/robots.txt': { headers: { 'Content-Type': 'text/plain' }, body: `Sitemap: ${otherUrl}\nSitemap: /sitemap_index.xml\n` },
+    '/sitemap_index.xml': xml((o) => `<sitemapindex><sitemap><loc>${o}/page-sitemap.xml</loc></sitemap></sitemapindex>`),
+    '/page-sitemap.xml': xml((o) => `<urlset><url><loc>${o}/</loc></url><url><loc>${o}/listed/</loc></url></urlset>`),
+    '/listed/': { body: titled('Listed') },
+  });
+  try {
+    const out = tempDir();
+    const run = await capture([stub.origin, '--out', out, '--delay', '0']);
+    assert.equal(run.code, 0, run.stderr);
+    assert.deepEqual(other.requests, [], 'the other host is never asked');
+    const index = readJson(out, 'sitemaps/index.json');
+    assert.deepEqual(index.find((e) => e.url === otherUrl), { url: otherUrl, host: new URL(otherUrl).host, skipped: 'other host' });
+    assert.deepEqual(index.filter((e) => !e.skipped).map((e) => e.file).sort(), ['sitemaps/page-sitemap.xml', 'sitemaps/sitemap_index.xml']);
+    assert.deepEqual(readJson(out, 'inventory.json').map((r) => r.path), ['/', '/listed/']);
+    assert.deepEqual(readJson(out, 'meta.json').discoveryErrors, []);
+  } finally {
+    await stub.close();
+    await other.close();
+  }
+});
+
+test('two sitemap URLs with one file name are saved under different names, never overwritten', async () => {
+  const xml = (body) => (origin) => ({ headers: { 'Content-Type': 'application/xml' }, body: body(origin) });
+  const titled = (title) => `<html><head><title>${title}</title></head><body>${title}</body></html>`;
+  const urlset = (origin, path) => `<urlset><url><loc>${origin}${path}</loc></url></urlset>`;
+  const stub = await startStub({
+    '/': { body: titled('Home') },
+    '/robots.txt': { headers: { 'Content-Type': 'text/plain' }, body: 'Sitemap: /sitemap_index.xml\n' },
+    '/sitemap_index.xml': xml((o) => `<sitemapindex><sitemap><loc>${o}/en/page-sitemap.xml</loc></sitemap><sitemap><loc>${o}/es/page-sitemap.xml</loc></sitemap></sitemapindex>`),
+    '/en/page-sitemap.xml': xml((o) => urlset(o, '/en/')),
+    '/es/page-sitemap.xml': xml((o) => urlset(o, '/es/')),
+    '/en/': { body: titled('English') },
+    '/es/': { body: titled('Spanish') },
+  });
+  try {
+    const out = tempDir();
+    const run = await capture([stub.origin, '--out', out, '--delay', '0']);
+    assert.equal(run.code, 0, run.stderr);
+    const index = readJson(out, 'sitemaps/index.json');
+    const fileOf = (path) => index.find((e) => e.url === `${stub.origin}${path}`).file;
+    assert.equal(fileOf('/en/page-sitemap.xml'), 'sitemaps/page-sitemap.xml');
+    assert.equal(fileOf('/es/page-sitemap.xml'), 'sitemaps/page-sitemap-es.xml');
+    assert.match(readFileSync(join(out, 'sitemaps/page-sitemap.xml'), 'utf8'), /\/en\//);
+    assert.match(readFileSync(join(out, 'sitemaps/page-sitemap-es.xml'), 'utf8'), /\/es\//);
+  } finally {
+    await stub.close();
+  }
+});
+
 const untitled = { body: '<html><body><p>tiny</p></body></html>' };
 const titledPage = (title, links = '') => ({ body: `<html><head><title>${title}</title></head><body>${links}</body></html>` });
 
@@ -981,14 +1111,19 @@ test('three tiny untitled pages in a row stop the capture; all three are queued 
     '/d/': titledPage('D'),
   });
   try {
-    const out = tempDir();
-    const run = await capture([stub.origin, '--out', out, '--delay', '0']);
-    assert.equal(run.code, 3, run.stderr);
-    assert.match(run.stderr, /^blocked: 127\.0\.0\.1 anti-bot challenge \(/m);
-    assert.deepEqual(readJson(out, 'inventory.json').map((r) => `${r.path}:${r.status}`), ['/:200', '/a/:challenge', '/b/:challenge', '/c/:challenge']);
-    const state = readJson(out, 'state.json');
-    assert.deepEqual(state.queue.slice(0, 3).map((q) => new URL(q.url).pathname), ['/a/', '/b/', '/c/']);
-    assert.ok(!stub.requests.includes('/d/'), 'the crawl stopped');
+    // One at a time nothing after /c/ is asked for; with 4 in flight /d/ may already have been
+    // fetched ahead, but it is not recorded and stays queued.
+    for (const concurrency of ['1', '4']) {
+      stub.requests.length = 0;
+      const out = tempDir();
+      const run = await capture([stub.origin, '--out', out, '--delay', '0', '--concurrency', concurrency]);
+      assert.equal(run.code, 3, run.stderr);
+      assert.match(run.stderr, /^blocked: 127\.0\.0\.1 anti-bot challenge \(/m);
+      assert.deepEqual(readJson(out, 'inventory.json').map((r) => `${r.path}:${r.status}`), ['/:200', '/a/:challenge', '/b/:challenge', '/c/:challenge']);
+      const state = readJson(out, 'state.json');
+      assert.deepEqual(state.queue.map((q) => new URL(q.url).pathname), ['/a/', '/b/', '/c/', '/d/']);
+      if (concurrency === '1') assert.ok(!stub.requests.includes('/d/'), 'the crawl stopped');
+    }
   } finally {
     await stub.close();
   }
