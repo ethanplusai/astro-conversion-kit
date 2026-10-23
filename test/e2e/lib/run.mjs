@@ -432,7 +432,7 @@ export async function mediaAndCss({ site }) {
   for (const entry of readJson(join(site, 'capture', 'js', 'manifest.json')).filter((e) => e.file)) {
     cpSync(join(site, 'capture', 'js', entry.file), join(site, 'public', decodeURIComponent(new URL(entry.src).pathname).replace(/^\//, '')));
   }
-  const prune = await node(site, kit('convert-site', 'css-prune.mjs'), ['--css', 'capture/css', '--coverage', 'capture/css-coverage.json', '--out', 'src/styles/site.css', '--report', '.conversion/css-prune-report.json']);
+  const prune = await node(site, kit('convert-site', 'css-prune.mjs'), ['--single-sheet', '--css', 'capture/css', '--coverage', 'capture/css-coverage.json', '--out', 'src/styles/site.css', '--report', '.conversion/css-prune-report.json']);
   // Base.astro links src/styles/site.css itself (before the head slot), so nothing is added here.
   return { prune };
 }
