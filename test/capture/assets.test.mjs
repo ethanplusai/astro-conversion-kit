@@ -102,3 +102,29 @@ test('assets.mjs skips css manifest entries that were not saved (file: null) and
     await site.close();
   }
 });
+
+test('assets.mjs saves the web manifest, and the root icons meta.json icons saw answer 200', async () => {
+  const site = await startStub({
+    '/site.webmanifest': { headers: { 'Content-Type': 'application/manifest+json' }, body: '{"name":"x"}' },
+    '/favicon.ico': { headers: { 'Content-Type': 'image/x-icon' }, body: 'ico' },
+    '/apple-touch-icon.png': { headers: { 'Content-Type': 'image/png' }, body: 'png' },
+  });
+  const dir = tinyCapture(site.origin, '<html><head><link rel="manifest" href="/site.webmanifest"></head><body></body></html>', '');
+  const meta = JSON.parse(readFileSync(join(dir, 'meta.json'), 'utf8'));
+  writeFileSync(join(dir, 'meta.json'), JSON.stringify({ ...meta, icons: { '/favicon.ico': 200, '/apple-touch-icon.png': 404 } }));
+  try {
+    const result = await run(['--capture', dir, '--delay', '0']);
+    assert.equal(result.code, 0, result.stderr);
+    const index = JSON.parse(readFileSync(join(dir, 'assets/index.json'), 'utf8'));
+    const manifest = index.find((e) => e.kind === 'manifest');
+    assert.equal(manifest.url, `${site.origin}/site.webmanifest`);
+    assert.equal(readFileSync(join(dir, manifest.file), 'utf8'), '{"name":"x"}');
+    const root = index.find((e) => e.kind === 'root-favicon');
+    assert.equal(readFileSync(join(dir, root.file), 'utf8'), 'ico');
+    assert.ok(!index.some((e) => e.kind === 'root-apple-touch-icon'));
+    assert.ok(!site.requests.includes('/apple-touch-icon.png'), 'a root icon live answered 404 for is not asked');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    await site.close();
+  }
+});

@@ -16,7 +16,7 @@ import { srcsetUrls } from '../../parity-gates/scripts/lib/srcset.mjs';
 
 export { srcsetUrls };
 
-const USAGE = `Usage: node media.mjs --capture <dir> [--download <dir>] [--delay <ms>] [--max-file-bytes <n>]
+const USAGE = `Usage: node media.mjs --capture <dir> [--download <dir>] [--delay <ms>] [--concurrency <n>] [--max-file-bytes <n>]
 
 List every media file of a captured site in <capture>/media.json:
   [{ url, path, source[], referencedBy[], status, contentType, bytes }]
@@ -38,6 +38,9 @@ requested and is listed "blocked-address".
                     (streamed to disk; a download with no data for 30 s is a network error)
   --max-file-bytes <n>  largest file to download or measure (default ${MAX_FILE_BYTES}, 2 GB)
   --delay <ms>      wait between requests (default ${DEFAULT_DELAY_MS})
+  --concurrency <n> files requested at once (default 1, at most 32). Raise it only with the site
+                    owner's consent: --delay still spaces the request starts, so pair a
+                    higher value with a shorter --delay (for example 8 and 100)
   --ua "<string>"   user agent (default: a desktop Chrome)
   --help            show this help
 
@@ -76,7 +79,7 @@ const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const bareHost = (url) => url.host.toLowerCase().replace(/^www\./, '');
 
 function parseArgs(argv) {
-  const args = { capture: null, download: null, delayMs: DEFAULT_DELAY_MS, ua: DEFAULT_UA, maxFileBytes: MAX_FILE_BYTES, help: false };
+  const args = { capture: null, download: null, delayMs: DEFAULT_DELAY_MS, ua: DEFAULT_UA, maxFileBytes: MAX_FILE_BYTES, concurrency: 1, help: false };
   const value = (i, flag) => {
     if (i >= argv.length || argv[i].startsWith('--')) throw new UsageError(`${flag} needs a value`);
     return argv[i];
@@ -91,6 +94,10 @@ function parseArgs(argv) {
       const n = Number(value((i += 1), arg));
       if (!Number.isInteger(n) || n < 0) throw new UsageError('--delay needs a whole number');
       args.delayMs = n;
+    } else if (arg === '--concurrency') {
+      const n = Number(value((i += 1), arg));
+      if (!Number.isInteger(n) || n < 1 || n > 32) throw new UsageError('--concurrency needs a whole number from 1 to 32');
+      args.concurrency = n;
     } else if (arg === '--max-file-bytes') {
       const n = Number(value((i += 1), arg));
       if (!Number.isInteger(n) || n < 1) throw new UsageError('--max-file-bytes needs a whole number of bytes');
@@ -290,7 +297,8 @@ async function main() {
 
   // Every entry carries the fields from the start, so a stopped run lists what is left as null.
   for (const entry of media) Object.assign(entry, { status: null, contentType: null, bytes: null });
-  for (const entry of media) {
+  // One file: check it (and download it) unless an earlier run already did.
+  const checkOne = async (entry) => {
     const before = earlier.get(entry.path);
     const target = args.download ? downloadTarget(args.download, entry.path) : null;
     // A file that was too large is asked again: the cap may have been raised.
@@ -299,7 +307,7 @@ async function main() {
       if (downloaded) {
         Object.assign(entry, { status: before.status, contentType: before.contentType, bytes: before.bytes });
         if (before.location) entry.location = before.location;
-        continue;
+        return;
       }
     }
 
@@ -342,7 +350,19 @@ async function main() {
       entry.location = new URL(res.headers.location, entry.url).href;
     }
     if (streak.size >= BLOCK_LIMIT) stop();
-  }
+    done += 1;
+    // Save progress now and then, so a stopped run resumes without asking again.
+    if (done % 100 === 0) write();
+  };
+
+  // --concurrency workers share the per-host pacing in fetchPaced: --delay stays the gap
+  // between request starts, and up to --concurrency requests are in flight at once.
+  let done = 0;
+  let next = 0;
+  const worker = async () => {
+    while (next < media.length) await checkOne(media[next++]);
+  };
+  await Promise.all(Array.from({ length: Math.min(args.concurrency, media.length) }, worker));
 
   write();
   const ok = media.filter((m) => m.status === 200);

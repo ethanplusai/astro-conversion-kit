@@ -31,7 +31,12 @@ change `--ua` to get past a block.
   with no success between them, state saved, those three queued again with fresh tries.
   It never requests `wp-admin`, `wp-login`, `xmlrpc.php` or `?s=` searches.
 - `media` tries each file 3 times: a persistent 429 or 503 stops it at once; a 403 or network
-  error is recorded as that file's status, and 3 such files in a row stop it.
+  error is recorded as that file's status, and 3 such files in a row stop it. It saves
+  `media.json` every 100 files, so a stopped run resumes close to where it was.
+  `--concurrency <n>` (default 1, at most 32) keeps up to n files in flight; `--delay` still
+  spaces the request starts, so a higher value goes with a shorter `--delay` (for example
+  `--concurrency 8 --delay 100` for a media library of tens of thousands of files). Raise it only
+  with the site owner's consent, and drop back to the default if the site starts answering 429.
 - `fingerprint` does not retry: a blocked home page, or one that is a bot challenge, is exit 3. `assets` and `shoot` back off and
   stop after 3 blocked responses in a row.
 
@@ -56,7 +61,8 @@ source. Run each step as its own command, in this order:
    (`/<32 hex>/`) once, so the site's own 404 page is saved as `pages/404.html` (`meta.json`
    `notFound`; a site that answers 200 or redirects there is recorded with no page), and asks
    for `/favicon.ico` and `/apple-touch-icon.png` once each (`meta.json` `icons`: path to
-   status). A sitemap robots.txt names that answers 404 (or any non-200) is listed in
+   status). URLs are keyed with upper-case percent escapes (`%c3%a9` and `%C3%A9` are one URL),
+   so a page linked with both spellings is captured once. A sitemap robots.txt names that answers 404 (or any non-200) is listed in
    `sitemaps/index.json` with its status and in `meta.json` `discoveryErrors`.
 
        node <skill-dir>/scripts/capture.mjs https://www.example.com --out capture
@@ -81,7 +87,10 @@ source. Run each step as its own command, in this order:
 
        node <skill-dir>/scripts/templates.mjs --capture capture
 
-5. **Assets.** Logo, favicon, apple-touch-icon and every `@font-face` font into `capture/assets/`:
+5. **Assets.** Logo, favicon, apple-touch-icon, the `<link rel=manifest>` web manifest and every
+   `@font-face` font into `capture/assets/`, plus the root `/favicon.ico` and
+   `/apple-touch-icon.png` (`root-favicon.*`, `root-apple-touch-icon.*`) when `meta.json` `icons`
+   recorded them at 200:
 
        node <skill-dir>/scripts/assets.mjs --capture capture
 

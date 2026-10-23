@@ -190,8 +190,13 @@ const forbidden = (url) => NEVER.test(url.pathname) || url.searchParams.has('s')
 // Not a page: never downloaded by the crawl (files are enumerated by the media step).
 const notAPage = (url) => !PAGE_EXTENSIONS.has(extensionOf(url.pathname)) || NOT_PAGES.test(url.pathname);
 
+// %e2 and %E2 are the same octet (RFC 3986 6.2.2.1): keys carry upper-case escapes, so a page
+// linked with both spellings is requested once.
+const upperEscapes = (href) => href.replace(/%[0-9a-f]{2}/gi, (m) => m.toUpperCase());
+
 // The crawl's view of a URL: its canonical key (same site, canonical scheme and host, no
-// fragment, query kept only where the rules allow), or null when it is out of scope.
+// fragment, query kept only where the rules allow, upper-case escapes), or null when it is out
+// of scope.
 function scoper(state) {
   const canonical = new URL(state.canonicalOrigin);
   return (href, base = state.canonicalOrigin) => {
@@ -208,7 +213,7 @@ function scoper(state) {
     if (forbidden(url)) return null;
     if (!state.options.includeQuery && !isShortlink(url)) url.search = '';
     if (notAPage(url)) return null;
-    return url.href;
+    return upperEscapes(url.href);
   };
 }
 
@@ -797,6 +802,12 @@ class Crawler {
     }
 
     const finalKey = result.offSite ? null : this.scope(result.finalUrl);
+    const landed = res && finalKey && upperEscapes(result.finalUrl) === finalKey;
+    // A redirect that only changes the escapes' case lands on this same page: no redirect row.
+    if (landed && finalKey === item.url) {
+      this.record(item.url, res, item.kind);
+      return {};
+    }
     this.state.redirects.push({
       from: pathOf(item.url),
       to: result.offSite ? result.finalUrl : pathOf(result.finalUrl),
@@ -810,9 +821,9 @@ class Crawler {
       this.seen.add(finalKey);
       this.state.seen.push(finalKey);
       this.state.foundBy[finalKey] = [...(this.state.foundBy[item.url] ?? ['crawl'])];
-      if (res && result.finalUrl === finalKey) this.record(finalKey, res, item.kind);
+      if (landed) this.record(finalKey, res, item.kind);
       else this.state.queue.push({ url: finalKey, attempts: 0, kind: item.kind });
-    } else if (res && result.finalUrl === finalKey && !this.recorded.has(finalKey)) {
+    } else if (landed && !this.recorded.has(finalKey)) {
       // In place: drain() holds this same array.
       const queued = this.state.queue.findIndex((q) => q.url === finalKey);
       if (queued !== -1) this.state.queue.splice(queued, 1);

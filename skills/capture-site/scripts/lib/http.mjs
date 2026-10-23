@@ -60,9 +60,11 @@ const sleep = (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)
 async function pace(host, delayMs) {
   const state = hosts.get(host) ?? { lastAt: 0, backoff: 1 };
   hosts.set(host, state);
-  const wait = state.lastAt + delayMs * state.backoff - Date.now();
-  if (wait > 0) await sleep(wait);
-  state.lastAt = Date.now();
+  // Reserve the next start slot before waiting, so concurrent callers are spaced too.
+  const now = Date.now();
+  const at = Math.max(now, state.lastAt + delayMs * state.backoff);
+  state.lastAt = at;
+  if (at > now) await sleep(at - now);
   return state;
 }
 
@@ -235,7 +237,7 @@ export async function fetchPaced(url, {
   const signal = AbortSignal.any([AbortSignal.timeout(timeoutMs), idle.signal]);
   const fail = (err) => {
     blocked += 1;
-    state.lastAt = Date.now();
+    state.lastAt = Math.max(state.lastAt, Date.now());
     return { status: 0, headers: {}, body: '', finalUrl: target.href, bytes: null, error: err.cause?.code ?? err.message };
   };
 
@@ -256,7 +258,7 @@ export async function fetchPaced(url, {
       const check = await guard(target, trust, deadline);
       if (check?.address) {
         clearTimeout(idleTimer);
-        state.lastAt = Date.now();
+        state.lastAt = Math.max(state.lastAt, Date.now());
         return refused(check.address, target);
       }
       if (check?.network) throw Object.assign(new Error(check.network), { cause: { code: check.network } });
@@ -278,7 +280,7 @@ export async function fetchPaced(url, {
   clearTimeout(idleTimer);
 
   const headers = Object.fromEntries(res.headers);
-  state.lastAt = Date.now();
+  state.lastAt = Math.max(state.lastAt, Date.now());
   if (BLOCK_STATUSES.has(res.status)) blocked += 1;
   else blocked = 0;
   if (BACKOFF_STATUSES.has(res.status)) state.backoff = Math.min(state.backoff * 2, MAX_BACKOFF);

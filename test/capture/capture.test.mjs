@@ -368,6 +368,28 @@ test('only HTML and hreflang alternates are followed; feeds go to feeds/, wp-jso
   }
 });
 
+test('a URL linked with lower- and upper-case percent escapes is captured once', async () => {
+  const stub = await startStub({
+    '/': { body: '<html><head><title>Home</title></head><body><a href="/caf%c3%a9/">a</a> <a href="/caf%C3%A9/">b</a> <a href="/na%c3%afve/">c</a></body></html>' },
+    '/caf%C3%A9/': { body: '<html><head><title>Cafe</title></head><body>cafe</body></html>' },
+    // A redirect that only changes the escapes' case lands on the same page.
+    '/na%C3%AFve/': { status: 301, headers: { Location: '/na%c3%afve/' } },
+    '/na%c3%afve/': { body: '<html><head><title>Naive</title></head><body>naive</body></html>' },
+  });
+  try {
+    const out = tempDir();
+    const run = await capture([stub.origin, '--out', out, '--delay', '0', '--no-rest']);
+    assert.equal(run.code, 0, run.stderr);
+    assert.ok(!stub.requests.includes('/caf%c3%a9/'), stub.requests.join(' '));
+    assert.equal(stub.requests.filter((u) => u === '/caf%C3%A9/').length, 1);
+    const inventory = readJson(out, 'inventory.json');
+    assert.deepEqual(inventory.map((r) => [r.path, r.status]), [['/', 200], ['/caf%C3%A9/', 200], ['/na%C3%AFve/', 200]]);
+    assert.deepEqual(readJson(out, 'redirects.json'), []);
+  } finally {
+    await stub.close();
+  }
+});
+
 test('an unreachable site exits 3 so it can be resumed', async () => {
   const stub = await startStub({});
   await stub.close();
