@@ -273,6 +273,15 @@ test('a cold npx that does not answer in time is "unknown", never "missing"', { 
   assert.equal(strayProcess(`sleep ${SLEEP_MARK}`), false);
 });
 
+test('a CLI found on PATH (gh) is named without npx in the no-answer line', { timeout: 30000 }, (t) => {
+  const bin = tempDir(t, 'preflight-bin-');
+  const home = tempDir(t, 'preflight-home-');
+  fakeBin(bin, 'gh', `if [ "$1" = "--version" ]; then echo "gh version 2.70.0"; exit 0; fi\n/bin/sleep ${SLEEP_MARK}\nexit 0`);
+  const text = run(['--home', home, '--path-env', bin], { PREFLIGHT_PROBE_TIMEOUT_MS: '1000' });
+  assert.match(text.stdout, /^gh: no answer in 1 s; run `gh auth status` yourself$/m);
+  assert.equal(strayProcess(`sleep ${SLEEP_MARK}`), false);
+});
+
 test('the probe timeout is 30 s by default', () => {
   assert.match(run(['--help']).stdout, /Each probe times out after 30 s/);
 });

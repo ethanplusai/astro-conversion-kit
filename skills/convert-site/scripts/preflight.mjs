@@ -270,7 +270,7 @@ function formatReport(report) {
     const detail = tool.present ? `${tool.version ?? 'unknown'}  ${login}${scope}`.trim() : tool.timedOut ? 'unknown' : 'missing';
     lines.push(`${name.padEnd(10)}${detail}`);
     if (tool.timedOut) {
-      const command = [tool.via === 'path' ? name : `npx ${name}`, ...(TOOLS[name] ?? ['--version'])].join(' ');
+      const command = [tool.via === 'npx' || !tool.present ? `npx ${name}` : name, ...(TOOLS[name] ?? ['--version'])].join(' ');
       noAnswer.push(`${name}: no answer in ${PROBE_TIMEOUT_MS / 1000} s; run \`${command}\` yourself`);
     }
   }
