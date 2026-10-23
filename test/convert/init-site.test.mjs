@@ -189,6 +189,8 @@ test('init scaffolds templates, copies scripts, commits on main and switches to 
   }
   assert.equal(pkg.scripts['review:check'], 'node scripts/review/check.mjs --review review');
   assert.equal(pkg.scripts['review:serve'], 'node scripts/review-serve.mjs');
+  assert.equal(pkg.scripts['assets:copy'], 'node scripts/copy-assets.mjs --capture capture --site .');
+  assert.equal(pkg.scripts['links:exceptions'], 'node scripts/link-exceptions.mjs --baseline baseline --capture capture --out exceptions.json');
   assert.match(readFileSync(join(dir, 'README.md'), 'utf8'), /^\| `npm run review:serve` \| Serve `dist\/` with vercel\.json applied, for the visual review \|$/m);
   assert.match(readFileSync(join(dir, 'README.md'), 'utf8'), /^\| `npm run review:check` \| Re-reads every diff and style result; exits 1 if any row fails \|$/m);
   assert.match(agents, /review:shoot`, `review:diff`, `review:styles`, `review:sheet` and `review:check`/);
@@ -220,7 +222,8 @@ test('the real copied scripts answer --help from inside the scaffolded site', (t
   assert.equal(result.status, 0, result.stdout + result.stderr);
   // Stands in for npm install: the site resolves the pinned packages from its own node_modules.
   symlinkSync(join(ROOT, 'node_modules'), join(dir, 'node_modules'), 'dir');
-  const scripts = ['scripts/review/shoot.mjs', 'scripts/state.mjs', 'scripts/media-upload.mjs', 'scripts/review-serve.mjs', 'scripts/verify-live.mjs']
+  const scripts = ['scripts/review/shoot.mjs', 'scripts/state.mjs', 'scripts/media-upload.mjs', 'scripts/review-serve.mjs', 'scripts/verify-live.mjs',
+    'scripts/copy-assets.mjs', 'scripts/link-exceptions.mjs']
     .filter((script) => script !== 'scripts/verify-live.mjs' || existsSync(join(dir, script)));
   for (const script of scripts) {
     const help = spawnSync(process.execPath, [script, '--help'], { cwd: dir, encoding: 'utf8' });

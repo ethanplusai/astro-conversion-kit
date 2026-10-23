@@ -57,9 +57,11 @@ parity and this file is wrong: say so and fix this file.
   unchanged otherwise.
 - **WordPress API head links are kept as captured.** `wp-json/` (`rel="https://api.w.org/"`),
   `xmlrpc.php?rsd` (`EditURI`) and `wp-json/wp/v2/pages/N` (`alternate`) stay in the head
-  although nothing answers them on a static host. The build generates their links exceptions,
-  one row per API link (reason "WordPress API link kept as captured"), rather than dropping the
-  links.
+  although nothing answers them on a static host. `npm run links:exceptions`
+  (`link-exceptions.mjs --baseline baseline --capture capture --out exceptions.json`) writes
+  their links exceptions, one row per API link per page (reason "WordPress API link kept as
+  captured"), and one per link to a page live answered 404 or 410 (reason "broken on live"),
+  rather than dropping the links.
 - **Same-origin asset URLs are root-relative, by default.** A `<script src>`, a `<link href>` for
   a stylesheet, icon or preload, an `<img src>` and `srcset`, and a `<video>`, `<audio>` or
   `<source>` `src` (and `poster`) that the captured markup writes absolute to the live origin
@@ -112,9 +114,10 @@ parity and this file is wrong: say so and fix this file.
 
 ## Media and fonts
 
-- **Original paths, always.** Mode `repo`: copy the capture's download into `public/` so every
-  file is at its site path (`cp -R .conversion/media-cache/. public/`), every file the capture
-  listed, referenced or not
+- **Original paths, always.** `npm run assets:copy` (`copy-assets.mjs --capture capture
+  --site .`) does the copying. Mode `repo`: it copies the capture's download
+  (`.conversion/media-cache/`) into `public/` so every file is at its site path, every file the
+  capture listed, referenced or not
   (WordPress image sizes included). Mode `store` or `live-temporary`: nothing under the media
   prefix goes in `public/`; the host file says how the prefix is reached. In every mode, files
   outside the media prefix are copied to `public/` at their live paths (the media gate checks
@@ -133,8 +136,9 @@ parity and this file is wrong: say so and fix this file.
 - Every `root-icon` entry in `capture/assets/index.json` that has a `file` is copied byte for
   byte to `public/<path>` (`assets/root-favicon.ico` → `public/favicon.ico`,
   `assets/root-apple-touch-icon.png` → `public/apple-touch-icon.png`). One with `file: null` is
-  an icon live did not serve at the root (its status and note say why); copy-assets copies each
-  `root-icon` entry with a `file` to `public/` plus its `path`.
+  an icon live did not serve at the root (its status and note say why); `npm run assets:copy`
+  copies each `root-icon` entry with a `file` to `public/` plus its `path`, and the fonts and
+  the web manifest with them.
 
 ## Scripts
 
@@ -143,7 +147,8 @@ parity and this file is wrong: say so and fix this file.
   `baseline/js.json`). The default is to copy each one that drives visible behaviour (a lazy
   loader, a menu toggle, a scroll reveal, a slider), and the vendor library it needs, to its
   live path under `public/`, so the captured `<script src>` tags keep working; the routes gate
-  allows those paths. Rebuilding one as a small inline script against the same markup, or
+  allows those paths. `npm run assets:copy` copies every script the capture saved; a script
+  dropped by a decision row loses its `<script>` tag, and its file is left unused. Rebuilding one as a small inline script against the same markup, or
   dropping it, is a decision row per script.
 - Scripts that do nothing on a static site (`wp-emoji`, `admin-bar`, `comment-reply`,
   `wp-embed` and the like) are dropped by default, with their `<script>` tags, under one decision

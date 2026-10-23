@@ -12,6 +12,8 @@ Requires Node 22.23.4 or newer (`nvm use`), then `npm install`.
 | `npm run preview` | Serve `dist/` locally |
 | `npm test` | Unit tests under `test/` |
 | `npm run baseline` | Build `baseline/` from `capture/` |
+| `npm run links:exceptions` | Add the WordPress API and broken-on-live link exceptions to `exceptions.json` |
+| `npm run assets:copy` | Copy captured scripts, fonts, icons and media outside the media prefix to `public/` |
 | `npm run verify` | Run every parity gate against `dist/` |
 | `npm run verify:proposals` | Gates with approved-pending proposals switched on |
 | `npm run verify:release` | Gates for the indexable launch build |

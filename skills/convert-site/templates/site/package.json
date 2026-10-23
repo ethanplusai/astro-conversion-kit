@@ -13,6 +13,8 @@
     "preview": "astro preview",
     "test": "node --test \"test/**/*.test.mjs\"",
     "baseline": "node scripts/build-baseline.mjs --capture capture --out baseline",
+    "assets:copy": "node scripts/copy-assets.mjs --capture capture --site .",
+    "links:exceptions": "node scripts/link-exceptions.mjs --baseline baseline --capture capture --out exceptions.json",
     "verify": "node scripts/verify/run-all.mjs",
     "verify:proposals": "PROPOSALS=on node scripts/verify/run-all.mjs",
     "verify:release": "PUBLIC_INDEXABLE=true node scripts/verify/run-all.mjs",

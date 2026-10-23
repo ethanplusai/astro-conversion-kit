@@ -272,13 +272,16 @@ test('build-rules and phases: site.css linked by URL before the head slot, page 
 
 test('phases and build-rules: VIP concatenated scripts, --allow-extra on routes only, WordPress API link exceptions, Lighthouse optional', () => {
   const phases = flat(read('references/phases.md'));
-  assert.match(phases, /`\/_static\/\?\?a\.js,b\.js`\) cannot be served by a static host and `assets\.mjs` does not rewrite them: you save each concatenation as one file at `\/_static\/concat\/<hash>\.js`/);
+  assert.match(phases, /`\/_static\/\?\?a\.js,b\.js`\) cannot be served by a static host and `assets\.mjs` does not rewrite them: `npm run assets:copy` writes each captured concatenation as one file at `\/_static\/concat\/<sha1>\.js` and maps each URL to its file in `public\/_static\/concat\/manifest\.json`/);
+  assert.match(phases, /--out baseline --check npm run links:exceptions `npm run baseline` also writes/);
+  assert.match(phases, /1\. Media \(`build-rules\.md`, "Media"\) and fonts: `npm run assets:copy` \(`copy-assets\.mjs`\)/);
   assert.match(phases, /pass `--allow-extra '\/_static\/concat\/\*'` on every routes gate run/);
   assert.match(phases, /Only `routes\.mjs` \(and `npm run verify`, which hands it on\) accepts `--allow-extra`; the other single gate scripts exit 2 on it/);
   assert.match(phases, /Lighthouse is optional: when it is not installed the step is reported as skipped, never as a failure/);
   const rules = flat(read('references/build-rules.md'));
   assert.match(rules, /\*\*WordPress API head links are kept as captured\.\*\*/);
-  assert.match(rules, /The build generates their links exceptions, one row per API link \(reason "WordPress API link kept as captured"\), rather than dropping the links/);
+  assert.match(rules, /`npm run links:exceptions` \(`link-exceptions\.mjs --baseline baseline --capture capture --out exceptions\.json`\) writes their links exceptions, one row per API link per page \(reason "WordPress API link kept as captured"\), and one per link to a page live answered 404 or 410 \(reason "broken on live"\), rather than dropping the links/);
+  assert.match(rules, /`npm run assets:copy` \(`copy-assets\.mjs --capture capture --site \.`\) does the copying/);
 });
 
 test('intake and plan: the forms answer applies only when the capture finds a POST form', () => {
