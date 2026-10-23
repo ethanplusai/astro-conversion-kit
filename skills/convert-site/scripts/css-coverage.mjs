@@ -9,12 +9,12 @@ import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { assertNodeVersion } from './lib/node-version.mjs';
-import { blockAnalytics } from './lib/blocked-hosts.mjs';
+import { blockAnalytics, parseBlockHosts } from './lib/blocked-hosts.mjs';
 import { stateRules } from './lib/state-selectors.mjs';
 
 const MAX_TOGGLES = 20;
 const HELP = `Usage: node css-coverage.mjs --base <origin> --routes <list|inventory.json> --out coverage.json
-                           [--widths 390,768,1440] [--delay 500]
+                           [--widths 390,768,1440] [--delay 500] [--block-hosts <host,...>]
 
 Loads every route at every width in Chromium with CSS coverage on, waits for the
 load event and a short settle, hovers and focuses the first a, button and input
@@ -44,6 +44,9 @@ injected styles are not recorded and the loads do not count as visits.
   --widths   comma list of viewport widths (default 390,768,1440)
   --out      coverage file to write
   --delay    milliseconds between page loads (default 500); doubled on 429/503
+  --block-hosts <host,...>  also block these hosts (and their subdomains) for this run: a
+             consent manager such as cmp.osano.com that turns the theme's scripts off
+             when the page is not on the live host
 
 Exit codes: 0 written, 1 a route failed to load (the rest are still written),
 2 usage or environment error, 3 stopped after 3 consecutive blocked responses
@@ -87,6 +90,15 @@ export function readRoutes(value) {
     .map((record) => record.path);
 }
 
+function blockHostsFrom(value) {
+  if (value === undefined) return [];
+  try {
+    return parseBlockHosts(value);
+  } catch (error) {
+    throw new UsageError(error.message);
+  }
+}
+
 function parse(argv) {
   let values;
   try {
@@ -98,6 +110,7 @@ function parse(argv) {
         widths: { type: 'string', default: '390,768,1440' },
         out: { type: 'string' },
         delay: { type: 'string', default: '500' },
+        'block-hosts': { type: 'string' },
         help: { type: 'boolean', default: false },
       },
     }));
@@ -121,7 +134,7 @@ function parse(argv) {
   if (!Number.isFinite(delay) || delay < 0) throw new UsageError(`--delay must be a number of milliseconds: ${values.delay}`);
   const routes = readRoutes(values.routes);
   if (!routes.length) throw new UsageError('--routes names no paths');
-  return { base, routes, widths, out: resolve(values.out), delay };
+  return { base, routes, widths, out: resolve(values.out), delay, blockHosts: blockHostsFrom(values['block-hosts']) };
 }
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
@@ -243,7 +256,7 @@ function addEntries(result, inlineKeys, entries, pageUrl, path, styleTexts) {
   }
 }
 
-async function cover({ base, routes, widths, out, delay }) {
+async function cover({ base, routes, widths, out, delay, blockHosts }) {
   const result = {};
   const inlineKeys = new Map();
   let failed = 0;
@@ -255,7 +268,7 @@ async function cover({ base, routes, widths, out, delay }) {
   try {
     widths: for (const width of widths) {
       const context = await browser.newContext({ viewport: { width, height: VIEWPORT_HEIGHT }, userAgent: USER_AGENT });
-      await blockAnalytics(context);
+      await blockAnalytics(context, { extra: blockHosts });
       for (const path of routes) {
         const url = new URL(path, base).href;
         for (;;) {

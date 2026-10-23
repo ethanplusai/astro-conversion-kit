@@ -6,13 +6,13 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { assertNodeVersion } from './lib/node-version.mjs';
-import { blockAnalytics } from './lib/blocked-hosts.mjs';
+import { blockAnalytics, parseBlockHosts } from './lib/blocked-hosts.mjs';
 import { readRoutes, RoutesError } from './lib/routes.mjs';
 import { LENGTH_TOLERANCE_PX, PROPERTIES, SELECTORS } from './lib/selectors.mjs';
 
 const HELP = `Usage: node styles.mjs --live <origin> --new <origin> --routes <templates.json|list>
                         [--widths 390,1440] [--out styles.json] [--delay 500]
-                        [--allow-analytics]
+                        [--allow-analytics] [--block-hosts <host,...>]
 
 Opens every route at every width on both origins and compares, on the first
 match of each sampled selector, font-family (first family), font-size,
@@ -30,6 +30,10 @@ Lengths pass within ${LENGTH_TOLERANCE_PX} px; colours and families must match e
   --delay    milliseconds between page loads (default 500)
   --allow-analytics  let analytics, tag, pixel and chat hosts load on both
              origins (blocked by default)
+  --block-hosts <host,...>  also block these hosts (and their subdomains) on both
+             origins for this run, with or without --allow-analytics: a consent
+             manager such as cmp.osano.com that turns the theme's scripts off when
+             the page is not on the live host
 
 Exit codes: 0 every row passes, 1 a row fails, 2 usage or environment error.`;
 
@@ -153,6 +157,15 @@ export function compareSamples({ route, path }, width, liveSample, nextSample) {
   return rows;
 }
 
+function blockHostsFrom(value) {
+  if (value === undefined) return [];
+  try {
+    return parseBlockHosts(value);
+  } catch (error) {
+    throw new UsageError(error.message);
+  }
+}
+
 function options(argv) {
   let values;
   try {
@@ -166,6 +179,7 @@ function options(argv) {
         out: { type: 'string', default: 'styles.json' },
         delay: { type: 'string', default: '500' },
         'allow-analytics': { type: 'boolean', default: false },
+        'block-hosts': { type: 'string' },
         help: { type: 'boolean', short: 'h' },
       },
     }));
@@ -189,7 +203,10 @@ function options(argv) {
   if (!Number.isFinite(delay) || delay < 0) throw new UsageError('--delay must be a number of milliseconds');
   const routes = parseRoutes(values.routes);
   if (routes.length === 0) throw new UsageError('--routes names no routes');
-  return { live: values.live, next: values.new, routes, widths, out: values.out, delay, allowAnalytics: values['allow-analytics'] };
+  return {
+    live: values.live, next: values.new, routes, widths, out: values.out, delay,
+    allowAnalytics: values['allow-analytics'], blockHosts: blockHostsFrom(values['block-hosts']),
+  };
 }
 
 export async function main(argv = process.argv.slice(2)) {
@@ -222,7 +239,7 @@ export async function main(argv = process.argv.slice(2)) {
     for (const target of opts.routes) {
       for (const width of opts.widths) {
         const context = await browser.newContext({ viewport: { width, height: VIEWPORT_HEIGHT }, userAgent: USER_AGENT });
-        if (!opts.allowAnalytics) await blockAnalytics(context);
+        await blockAnalytics(context, { extra: opts.blockHosts, analytics: !opts.allowAnalytics });
         try {
           const samples = [];
           for (const origin of [opts.live, opts.next]) {

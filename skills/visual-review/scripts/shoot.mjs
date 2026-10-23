@@ -9,10 +9,11 @@ import { fileURLToPath } from 'node:url';
 import { assertNodeVersion } from './lib/node-version.mjs';
 import { capture, launchBrowser, NavigationError, newShotContext, pngHeight } from './lib/browser.mjs';
 import { readRoutes, RoutesError } from './lib/routes.mjs';
+import { parseBlockHosts } from './lib/blocked-hosts.mjs';
 
 const HELP = `Usage: node shoot.mjs --base <origin> --routes <templates.json|/,/a/b/> --out <dir>
                       [--widths 390,768,1440] [--delay 500] [--wait 1500] [--full] [--scale 1]
-                      [--allow-analytics]
+                      [--allow-analytics] [--block-hosts <host,...>]
 
 Takes a full-page Chromium screenshot of every route at every width and writes
   <out>/<route>/<width>.png and <out>/manifest.json
@@ -34,6 +35,9 @@ Takes a full-page Chromium screenshot of every route at every width and writes
   --allow-analytics  let analytics, tag, pixel and chat hosts load (blocked
              by default: they do not draw the page, and a screenshot run
              must not count as visits in the site's reports)
+  --block-hosts <host,...>  also block these hosts (and their subdomains) for this run, with
+             or without --allow-analytics: a consent manager such as cmp.osano.com that
+             turns the theme's scripts off when the page is not on the live host
 
 Motion is frozen (prefers-reduced-motion plus injected CSS), scroll-reveal
 content is forced visible, lazy images are loaded by scrolling to the bottom and
@@ -86,6 +90,7 @@ function parse(argv) {
         full: { type: 'boolean', default: false },
         scale: { type: 'string', default: '1' },
         'allow-analytics': { type: 'boolean', default: false },
+        'block-hosts': { type: 'string' },
         help: { type: 'boolean', default: false },
       },
     }));
@@ -112,7 +117,17 @@ function parse(argv) {
     wait: number(values.wait, 'wait', { min: 0, max: 600000 }),
     scale: number(values.scale, 'scale', { min: 0.1, max: 1 }),
     allowAnalytics: values['allow-analytics'],
+    blockHosts: blockHostsFrom(values['block-hosts']),
   };
+}
+
+function blockHostsFrom(value) {
+  if (value === undefined) return [];
+  try {
+    return parseBlockHosts(value);
+  } catch (error) {
+    throw new UsageError(error.message);
+  }
 }
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
@@ -121,7 +136,7 @@ const failedEntry = (route, width, error) => ({
   route, width, file: null, heightPx: null, bannerClosed: false, scrollHeight: null, heightMismatch: false, error,
 });
 
-async function shoot({ base, routes, widths, out, delay, wait, scale, allowAnalytics }) {
+async function shoot({ base, routes, widths, out, delay, wait, scale, allowAnalytics, blockHosts }) {
   const manifest = [];
   let stopped = false;
   let pace = delay;
@@ -130,7 +145,7 @@ async function shoot({ base, routes, widths, out, delay, wait, scale, allowAnaly
   const browser = await launchBrowser();
   try {
     widths: for (const width of widths) {
-      const context = await newShotContext(browser, { width, scale, allowAnalytics });
+      const context = await newShotContext(browser, { width, scale, allowAnalytics, blockHosts });
       let page = await context.newPage();
       for (const { route, path } of routes) {
         const url = new URL(path, base).href;

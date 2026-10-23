@@ -1,6 +1,8 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { execFile, spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
@@ -8,7 +10,8 @@ import pixelmatch from 'pixelmatch';
 import { PNG } from 'pngjs';
 import { startFixture } from '../fixture/serve.mjs';
 import { VENDORS } from '../../skills/parity-gates/scripts/lib/vendors.mjs';
-import { BLOCKED_HOSTS, isBlockedUrl } from '../../skills/visual-review/scripts/lib/blocked-hosts.mjs';
+import { BLOCKED_HOSTS, isBlockedUrl, parseBlockHosts } from '../../skills/visual-review/scripts/lib/blocked-hosts.mjs';
+import { startStub } from '../capture/helpers.mjs';
 import { capture, newShotContext } from '../../skills/visual-review/scripts/lib/browser.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -75,12 +78,47 @@ test('convert-site carries a byte-identical copy of the blocked-hosts list', () 
 test('shoot, styles and css-coverage block analytics on every context unless --allow-analytics', () => {
   for (const script of ['visual-review/scripts/styles.mjs', 'convert-site/scripts/css-coverage.mjs']) {
     const source = readFileSync(join(ROOT, 'skills', script), 'utf8');
-    assert.match(source, /import \{ blockAnalytics \} from '\.\/lib\/blocked-hosts\.mjs'/, script);
-    assert.match(source, /blockAnalytics\(context\)/, script);
+    assert.match(source, /import \{ blockAnalytics, parseBlockHosts \} from '\.\/lib\/blocked-hosts\.mjs'/, script);
+    assert.match(source, /blockAnalytics\(context[,)]/, script);
   }
   for (const script of ['shoot.mjs', 'styles.mjs']) {
     const source = readFileSync(join(ROOT, 'skills', 'visual-review', 'scripts', script), 'utf8');
     assert.match(source, /--allow-analytics/, script);
+  }
+});
+
+test('--block-hosts adds hosts to the block list for the run, even with --allow-analytics', async () => {
+  // A consent manager on another host (cmp.osano.com on a real site): here localhost, while the
+  // page is served from 127.0.0.1.
+  const stub = await startStub({
+    '/': (origin) => ({ body: `<!doctype html><title>x</title><h1>Hi</h1><script src="${origin.replace('127.0.0.1', 'localhost')}/cmp.js"></script>` }),
+    '/cmp.js': { headers: { 'Content-Type': 'text/javascript' }, body: '' },
+  });
+  try {
+    const shoot = (extra) => new Promise((done) => {
+      execFile(process.execPath, [join(ROOT, 'skills', 'visual-review', 'scripts', 'shoot.mjs'), '--base', stub.origin, '--routes', '/',
+        '--widths', '390', '--wait', '0', '--delay', '0', '--out', mkdtempSync(join(tmpdir(), 'block-hosts-')), ...extra], (err, stdout, stderr) => done({ code: err ? err.code : 0, stderr }));
+    });
+    const blocked = await shoot(['--block-hosts', 'LOCALHOST, cmp.example.com']);
+    assert.equal(blocked.code, 0, blocked.stderr);
+    assert.ok(!stub.requests.includes('/cmp.js'), 'the extra host was never asked');
+    const allowed = await shoot(['--block-hosts', 'localhost', '--allow-analytics']);
+    assert.equal(allowed.code, 0, allowed.stderr);
+    assert.ok(!stub.requests.includes('/cmp.js'), '--allow-analytics does not lift --block-hosts');
+    const loaded = await shoot([]);
+    assert.equal(loaded.code, 0, loaded.stderr);
+    assert.ok(stub.requests.includes('/cmp.js'), 'without the option the host loads');
+    const bad = await shoot(['--block-hosts', 'https://cmp.example.com/x']);
+    assert.equal(bad.code, 2, 'a URL is not a host name');
+  } finally {
+    await stub.close();
+  }
+  assert.deepEqual(parseBlockHosts('cmp.osano.com, Example.COM'), ['cmp.osano.com', 'example.com']);
+  assert.ok(isBlockedUrl(new URL('https://cmp.osano.com/x.js'), ['osano.com']));
+  assert.ok(!isBlockedUrl(new URL('https://cmp.osano.com/x.js')));
+  for (const script of ['visual-review/scripts/shoot.mjs', 'visual-review/scripts/styles.mjs', 'convert-site/scripts/css-coverage.mjs']) {
+    const help = spawnSync(process.execPath, [join(ROOT, 'skills', script), '--help'], { encoding: 'utf8' });
+    assert.match(help.stdout, /--block-hosts <host,\.\.\.>/, script);
   }
 });
 

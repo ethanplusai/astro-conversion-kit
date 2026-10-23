@@ -20,15 +20,15 @@ export class NavigationError extends Error {}
 export const launchBrowser = () => chromium.launch();
 
 // One context per width: device scale, reduced motion and the shared user agent, with
-// analytics, tag and chat hosts blocked unless allowAnalytics.
-export async function newShotContext(browser, { width, scale = 1, allowAnalytics = false }) {
+// analytics, tag and chat hosts blocked unless allowAnalytics, and the blockHosts always.
+export async function newShotContext(browser, { width, scale = 1, allowAnalytics = false, blockHosts = [] }) {
   const context = await browser.newContext({
     viewport: { width, height: VIEWPORT_HEIGHT },
     deviceScaleFactor: scale,
     reducedMotion: 'reduce',
     userAgent: USER_AGENT,
   });
-  if (!allowAnalytics) await blockAnalytics(context);
+  await blockAnalytics(context, { extra: blockHosts, analytics: !allowAnalytics });
   return context;
 }
 

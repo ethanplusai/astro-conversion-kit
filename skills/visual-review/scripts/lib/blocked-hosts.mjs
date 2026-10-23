@@ -23,12 +23,29 @@ export const BLOCKED_HOSTS = [
   'crisp.chat', 'tawk.to', 'zdassets.com', 'zopim.com',
 ];
 
-export function isBlockedUrl(url) {
+const onHost = (url, hosts) => {
   const host = url.hostname.toLowerCase();
-  return BLOCKED_HOSTS.some((blocked) => host === blocked || host.endsWith(`.${blocked}`));
+  return hosts.some((blocked) => host === blocked || host.endsWith(`.${blocked}`));
+};
+
+// extra: more hosts to block for this run (--block-hosts).
+export function isBlockedUrl(url, extra = []) {
+  return onHost(url, BLOCKED_HOSTS) || onHost(url, extra);
 }
 
-// Aborts every request a Playwright browser context makes to a blocked host.
-export async function blockAnalytics(context) {
-  await context.route((url) => isBlockedUrl(url), (route) => route.abort('blockedbyclient'));
+// The host names of a --block-hosts value ("cmp.osano.com,consent.example.com"), lower case.
+// Throws on anything that is not a bare host name.
+export function parseBlockHosts(value) {
+  const hosts = String(value).split(',').map((h) => h.trim().toLowerCase()).filter(Boolean);
+  const bad = hosts.filter((h) => !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/.test(h));
+  if (bad.length || hosts.length === 0) throw new Error(`--block-hosts takes host names separated by commas, such as cmp.osano.com; got "${value}"`);
+  return hosts;
+}
+
+// Aborts every request a Playwright browser context makes to a blocked host: the analytics list
+// unless analytics is false (--allow-analytics), and the extra hosts always.
+export async function blockAnalytics(context, { extra = [], analytics = true } = {}) {
+  if (!analytics && extra.length === 0) return;
+  const blocked = (url) => (analytics ? isBlockedUrl(url, extra) : onHost(url, extra));
+  await context.route(blocked, (route) => route.abort('blockedbyclient'));
 }

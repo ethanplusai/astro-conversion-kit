@@ -55,7 +55,14 @@ analytics, tag, pixel and chat hosts (Google Analytics and Tag Manager, Meta pix
 Clarity, HubSpot tracking, Intercom, Drift, LinkedIn, TikTok, Pinterest, Segment, Mixpanel,
 Plausible, Fathom, Matomo cloud, Crisp, Tawk, Zendesk) are blocked in `review:shoot` and
 `review:styles`, so a review run never counts as a visit in the site's reports and a late chat
-bubble never lands in a shot; `--allow-analytics` lets them load. A screenshot
+bubble never lands in a shot; `--allow-analytics` lets them load. `--block-hosts <host,...>`
+(a comma list; each host's subdomains included) blocks more hosts for that run, with or without
+`--allow-analytics`, in `review:shoot`, `review:styles` and `css-coverage.mjs`. Use it for a
+consent manager that behaves differently off the live host: Osano (`cmp.osano.com`), loaded on
+`localhost` or a preview host, turned the theme's scripts off, so the build did not draw as
+live did. `--block-hosts cmp.osano.com` on every run lets the
+scripts run as on live; record it as a decision row, and pass the same list when the live
+shots are taken. A screenshot
 more than 2 px off the page's `scrollHeight` is flagged `heightMismatch`.
 
 What the diff measures: pixelmatch at threshold 0.1 with anti-aliasing ignored. A pair passes at
