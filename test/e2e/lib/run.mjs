@@ -83,14 +83,9 @@ export async function S(site, ...args) {
 const setState = (site, key, value) => S(site, 'set', key, JSON.stringify(value));
 export const state = (site) => readJson(join(site, '.conversion', 'state.json'));
 
-// The form flags the gates get on every run (forms.md), plus the routes gate's allowed extras:
-// the new thank-you page and each stylesheet css-prune serves at its live path (phases.md).
+// The form flags the gates get on every run (forms.md), plus the new thank-you page (routes).
 const FORM_FLAGS = ['--endpoint', ENDPOINT, '--honeypot', '_gotcha', '--thank-you', '/thank-you/'];
-const allowExtra = (site) => {
-  const { sheets = [] } = readJson(join(site, '.conversion', 'css-prune-report.json'));
-  return ['--allow-extra', ['/thank-you/', ...sheets.map((s) => new URL(s.href).pathname)].join(',')];
-};
-const verifyFlags = (site) => [...FORM_FLAGS, ...allowExtra(site)];
+const VERIFY_FLAGS = [...FORM_FLAGS, '--allow-extra', '/thank-you/'];
 
 // ---------------------------------------------------------------------------------------------
 // 1. intake
@@ -602,7 +597,7 @@ const SCOPED_GATES = ['forms', 'headers', 'media', 'routes', 'scripts', 'seo', '
 export async function scopedGates(site, P) {
   const results = {};
   for (const gate of SCOPED_GATES) {
-    const args = [...(P ? ['--paths', P] : []), ...(gate === 'forms' ? FORM_FLAGS : []), ...(gate === 'routes' ? allowExtra(site) : [])];
+    const args = [...(P ? ['--paths', P] : []), ...(gate === 'forms' ? FORM_FLAGS : []), ...(gate === 'routes' ? ['--allow-extra', '/thank-you/'] : [])];
     results[gate] = await node(site, join(site, 'scripts', 'verify', `${gate}.mjs`), args);
   }
   return results;
@@ -655,10 +650,10 @@ export async function build({ site, live }) {
 export async function gates({ site }) {
   await S(site, 'phase', 'gates');
   expectCode(await npm(site, ['run', 'build']));
-  const staging = await npm(site, ['run', 'verify', '--', ...verifyFlags(site)]);
+  const staging = await npm(site, ['run', 'verify', '--', ...VERIFY_FLAGS]);
   const stagingAbout = readFileSync(join(site, 'dist', 'about', 'index.html'), 'utf8');
   expectCode(await npm(site, ['run', 'build'], { env: { PUBLIC_INDEXABLE: 'true' } }));
-  const release = await npm(site, ['run', 'verify:release', '--', ...verifyFlags(site)]);
+  const release = await npm(site, ['run', 'verify:release', '--', ...VERIFY_FLAGS]);
   expectCode(await npm(site, ['run', 'build']));
   await setState(site, 'phases.gates.result', { verify: staging.code, release: release.code });
   return { staging, release, stagingAbout };
@@ -753,7 +748,7 @@ const COLLECT = "const fs=require('fs');const t=fs.readFileSync('.conversion/gat
 export async function suggestions({ site }) {
   await S(site, 'phase', 'suggestions');
   expectCode(await npm(site, ['run', 'build']));
-  const out = await npm(site, ['run', '--silent', 'verify', '--', '--json', ...verifyFlags(site)]);
+  const out = await npm(site, ['run', '--silent', 'verify', '--', '--json', ...VERIFY_FLAGS]);
   writeFileSync(join(site, '.conversion', 'gates.out'), out.stdout);
   expectCode(await sh(process.execPath, ['-e', COLLECT], { cwd: site }));
   const suggest = expectCode(await node(site, kit('suggest-improvements', 'suggest.mjs'), [
@@ -779,7 +774,7 @@ export async function pr({ site, results }) {
   write(join(site, '.conversion', 'pr-body.md'), body);
   await commit(site, 'docs: launch runbook');
   expectCode(await npm(site, ['run', 'build']));
-  const verify = await npm(site, ['run', 'verify', '--', ...verifyFlags(site)]);
+  const verify = await npm(site, ['run', 'verify', '--', ...VERIFY_FLAGS]);
   const check = await npm(site, ['run', 'review:check']);
   expectCode(await git(site, ['push', '-q', 'origin', 'astro-rebuild']));
   await setState(site, 'needsYou', [...needsYou, 'open the PR: gh pr create --base main --head astro-rebuild --body-file .conversion/pr-body.md']);

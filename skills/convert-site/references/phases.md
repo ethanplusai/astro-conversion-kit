@@ -233,9 +233,8 @@ Read `build-rules.md`, `forms.md`, `third-party.md` and your host file first. In
    in the report: the content extractor copies `heads[<path>]` into each page's data, and the
    page passes it to `Base.astro` as `css` (`build-rules.md`, "CSS"). css-prune clears the old
    `inline-*.css` in `src/styles/inline/` on each run, so commit the folder as it leaves it.
-   The routes gate does not know the served sheets yet: add the path of each `sheets[].href`
-   to the `--allow-extra` list of every routes run and `npm run verify` (for example
-   `--allow-extra '/wp-content/themes/<theme>/style.css,/wp-includes/css/dist/block-library/style.min.css'`).
+   The routes gate takes each sheet at its live path as built (`baseline/css.json`): no
+   `--allow-extra` is needed for them.
    Exit 1 means a stylesheet had no coverage and was kept whole: record a decision.
    Only for a simple classic theme (one theme sheet, no `<style>` blocks whose order
    matters) may `--single-sheet --out src/styles/site.css` merge it all into one file, a

@@ -32,6 +32,10 @@ Freeze a capture (capture.mjs, media.mjs and templates.mjs output) into a baseli
   js.json         [{ src, file, pages[] }]: the site's own script files the capture saved
                   (capture/js/manifest.json; file is relative to the capture), [] when none.
                   The routes gate lets the build serve each at its live path
+  css.json        [{ href, file, pages[] }]: the live site's own stylesheets the capture saved
+                  (capture/css/manifest.json, same host as the site, no inline blocks; file is
+                  relative to the capture), [] when none. The routes gate lets the build serve
+                  each at its live path, as css-prune writes them
   sitemaps.json   [name]: the live site's sitemap file names the capture saved (capture/sitemaps/),
                   which the routes gate lets the build serve at the root
   text/           the visible text of each page, copied from the capture
@@ -199,6 +203,22 @@ export function buildForms(inventory) {
   return forms;
 }
 
+// The saved stylesheets of capture/css/manifest.json on the site's host (www or not), as
+// { href, file, pages }; inline blocks and other hosts' sheets are left out.
+export function buildCss(manifest, origin) {
+  const host = (href) => {
+    try {
+      return new URL(href).hostname.replace(/^www\./, '');
+    } catch {
+      return null;
+    }
+  };
+  const site = origin ? host(origin) : null;
+  return (manifest ?? [])
+    .filter((e) => e.file && e.href && !e.inline && site && host(e.href) === site)
+    .map((e) => ({ href: e.href, file: `css/${e.file}`, pages: [...(e.pages ?? [])].sort() }));
+}
+
 // The saved same-origin scripts of capture/js/manifest.json, as { src, file, pages }.
 export function buildJs(manifest) {
   return (manifest ?? [])
@@ -362,6 +382,7 @@ function build(capture, out, csvFile) {
   writeJson(join(out, 'forms.json'), baseline.forms);
   writeJson(join(out, 'scripts.json'), baseline.scripts);
   writeJson(join(out, 'js.json'), buildJs(readJson(join(capture, 'js', 'manifest.json'), [])));
+  writeJson(join(out, 'css.json'), buildCss(readJson(join(capture, 'css', 'manifest.json'), []), readJson(join(capture, 'meta.json'), {}).origin));
   const sitemapDir = join(capture, 'sitemaps');
   writeJson(join(out, 'sitemaps.json'), existsSync(sitemapDir) ? readdirSync(sitemapDir).filter((f) => /\.xml$/i.test(f)).sort() : []);
   writeJson(join(out, 'counts.json'), counts);

@@ -94,8 +94,8 @@ parity and this file is wrong: say so and fix this file.
   live `media` attribute; a sheet linked with a media no tested width satisfies (`print`) is kept
   whole, because coverage runs on screen only. Another origin's sheet stays linked as live links
   it (`external`); a same-origin link whose sheet was not captured is left out (`notCaptured`).
-  The routes gate does not know the sheets yet: pass each `sheets[].href` path in
-  `--allow-extra` (see phases.md, step 6.2).
+  The baseline lists the captured sheets (`baseline/css.json`), so the routes gate takes each
+  file at its live path as built, not as an extra.
 - `--single-sheet` merges everything into `src/styles/site.css` instead, for a simple classic
   theme only: one theme stylesheet and no `<style>` blocks whose order matters. `Base.astro`
   then imports it by URL (`import siteCss from '../styles/site.css?url'`) and links it before the

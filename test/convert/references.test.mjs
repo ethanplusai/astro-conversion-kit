@@ -267,7 +267,9 @@ test('build-rules and phases: each sheet at its live path and each page\'s head 
   const phases = flat(read('references/phases.md'));
   assert.match(phases, /css-prune\.mjs --css capture\/css --coverage capture\/css-coverage\.json --report \.conversion\/css-prune-report\.json`\. It writes each linked sheet, pruned, to `public\/` at its live path/);
   assert.match(phases, /the content extractor copies `heads\[<path>\]` into each page's data, and the page passes it to `Base\.astro` as `css`/);
-  assert.match(phases, /add the path of each `sheets\[\]\.href` to the `--allow-extra` list of every routes run and `npm run verify`/);
+  assert.match(phases, /The routes gate takes each sheet at its live path as built \(`baseline\/css\.json`\): no `--allow-extra` is needed for them/);
+  assert.doesNotMatch(phases, /sheets\[\]\.href` to the `--allow-extra`/);
+  assert.match(rules, /The baseline lists the captured sheets \(`baseline\/css\.json`\), so the routes gate takes each file at its live path as built, not as an extra/);
 });
 
 test('build-rules and phases: --single-sheet links site.css by URL before the head slot, page sheets from pageSheets, uncoveredInline', () => {

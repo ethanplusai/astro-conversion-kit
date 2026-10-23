@@ -71,6 +71,19 @@ test("the capture's same-origin scripts (baseline/js.json) may be built at their
   assert.doesNotMatch(failed.stdout, /reveal\.js/);
 });
 
+test("the capture's same-origin stylesheets (baseline/css.json) may be built at their live paths; other stylesheets are extras", async () => {
+  const dist = makeDist(join(root, 'dist-theme-css'));
+  mkdirSync(join(dist, 'wp-content', 'themes', 'fixture'), { recursive: true });
+  writeFileSync(join(dist, 'wp-content', 'themes', 'fixture', 'style.css'), 'x');
+  const passed = await routes(dist);
+  assert.equal(passed.code, 0, passed.stdout + passed.stderr);
+  writeFileSync(join(dist, 'wp-content', 'themes', 'fixture', 'other.css'), 'x');
+  const failed = await routes(dist);
+  assert.equal(failed.code, 1);
+  assert.match(failed.stdout, /\/wp-content\/themes\/fixture\/other\.css extra/);
+  assert.doesNotMatch(failed.stdout, /style\.css/);
+});
+
 test("sitemaps at the live site's root names (sitemap_index.xml, page-sitemap.xml) are not extras", async () => {
   const dist = makeDist(join(root, 'dist-wp-sitemaps'));
   for (const file of ['sitemap_index.xml', 'page-sitemap.xml', 'post-sitemap.xml', 'category-sitemap.xml']) writeFileSync(join(dist, file), '<x/>');

@@ -78,6 +78,16 @@ The site's own script files the capture saved (`capture/js/manifest.json`; `file
 the capture), `[]` when there are none. The routes gate lets the build serve each at its live
 path; built or not, none is an extra.
 
+## baseline/css.json
+
+    [{ "href": "https://www.example.com/wp-content/themes/x/style.css?ver=1.2", "file": "css/1.css",
+       "pages": ["/", "/about/"] }]
+
+The site's own stylesheets the capture saved (`capture/css/manifest.json`, on the site's host
+with or without `www.`, no inline `<style>` files; `file` is relative to the capture), `[]` when
+there are none. css-prune serves each, pruned, at its live path; the routes gate lets the build
+serve it there, and built or not, none is an extra.
+
 ## baseline/sitemaps.json
 
     ["page-sitemap.xml", "post-sitemap.xml", "sitemap_index.xml"]
