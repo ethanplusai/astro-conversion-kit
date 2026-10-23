@@ -67,7 +67,11 @@ export async function loadLazyContent(page, { limits = LAZY_SCROLL_LIMITS, log =
   const { capped } = await evaluate(page, async ({ maxViewports, maxMs, imageTimeoutMs }) => {
     const pause = (ms) => new Promise((done) => setTimeout(done, ms));
     const started = Date.now();
-    for (const img of document.querySelectorAll('img[loading="lazy"]')) img.loading = 'eager';
+    // sizes="auto" only applies to lazy images: made eager, they fall back to 100vw and pick another
+    // srcset file depending on timing, so those stay lazy and the scroll below loads them.
+    for (const img of document.querySelectorAll('img[loading="lazy"]')) {
+      if (!/^\s*auto\b/i.test(img.getAttribute('sizes') ?? '')) img.loading = 'eager';
+    }
     const step = Math.max(200, window.innerHeight);
     let steps = 0;
     let hitCap = false;
@@ -85,12 +89,21 @@ export async function loadLazyContent(page, { limits = LAZY_SCROLL_LIMITS, log =
       await pause(250);
     }
     window.scrollTo(0, 0);
-    const pending = [...document.images].filter((img) => !img.complete);
+    // Only images the page asked for: a lazy image it never requested (a hidden slide) would
+    // hold every shot to the timeout.
+    const requested = [...document.images].filter((img) => img.currentSrc);
+    const pending = requested.filter((img) => !img.complete);
     await Promise.race([
       Promise.all(pending.map((img) => new Promise((done) => {
         img.addEventListener('load', done, { once: true });
         img.addEventListener('error', done, { once: true });
       }))),
+      pause(imageTimeoutMs),
+    ]);
+    // A loaded image can still be undecoded, and a full-page screenshot then paints it blank
+    // (a fast local server hits this; a slow live one rarely does).
+    await Promise.race([
+      Promise.all(requested.map((img) => img.decode().catch(() => undefined))),
       pause(imageTimeoutMs),
     ]);
     return { capped: hitCap };
@@ -151,6 +164,17 @@ export async function capture(page, url, { wait = 1500, log = console.error } = 
   if (wait > 0) await page.waitForTimeout(wait);
   // Banners that appear late, after a scroll or a timer, are closed too.
   if (await closeCookieBanner(page)) bannerClosed = true;
+  // Endless GSAP loops (a floating character, a drifting background) are JavaScript motion the
+  // freeze CSS cannot stop; each is put back to its start so the frame does not depend on how
+  // long the page took to load.
+  await evaluate(page, () => {
+    const timeline = window.gsap?.globalTimeline;
+    if (!timeline?.getChildren) return;
+    for (const tween of timeline.getChildren(true, true, true)) {
+      const repeat = tween.repeat?.();
+      if (repeat === -1 || repeat === Infinity) tween.progress(0).pause();
+    }
+  }, undefined, { label: 'GSAP loop reset' });
   const scrollHeight = await evaluate(page, () => Math.max(
     document.documentElement.scrollHeight,
     document.body ? document.body.scrollHeight : 0,

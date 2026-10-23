@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { chromium } from 'playwright';
 import { startFixture } from '../fixture/serve.mjs';
 import { run, readPng, TMP } from './helpers.mjs';
-import { freezePage, loadLazyContent, closeCookieBanner } from '../../skills/visual-review/scripts/lib/browser.mjs';
+import { capture, freezePage, loadLazyContent, closeCookieBanner } from '../../skills/visual-review/scripts/lib/browser.mjs';
+import { slugFor } from '../../skills/visual-review/scripts/lib/routes.mjs';
 import { heightMismatch } from '../../skills/visual-review/scripts/shoot.mjs';
 
 const OUT = join(TMP, 'visual-shoot');
@@ -149,6 +150,66 @@ test('the fixture home page does not hit the lazy scroll cap', async () => {
   assert.equal((await loadLazyContent(page, { log: (m) => messages.push(m) })).capped, false);
   assert.deepEqual(messages, []);
   await page.close();
+});
+
+test('lazy images are made eager except sizes="auto" ones; a never-requested image does not hold the shot', async () => {
+  const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
+  await page.goto(`${fixture.origin}/`);
+  const img = `${fixture.origin}/wp-content/uploads/2026/01/hero-300x200.jpg`;
+  await page.setContent(`<img id="plain" loading="lazy" src="${img}?a" style="margin-top:3000px">
+    <img id="auto" loading="lazy" sizes="auto, 300px" srcset="${img}?b 300w" style="display:block">
+    <div style="display:none"><img id="hidden" loading="lazy" sizes="auto" srcset="${img}?c 300w"></div>`);
+  const started = Date.now();
+  await loadLazyContent(page, { log: () => {} });
+  assert.ok(Date.now() - started < 8000, 'did not wait out the image timeout for the hidden slide');
+  const state = await page.$$eval('img', (imgs) => Object.fromEntries(imgs.map((i) => [i.id, { loading: i.loading, src: i.currentSrc }])));
+  assert.equal(state.plain.loading, 'eager');
+  assert.equal(state.auto.loading, 'lazy');
+  assert.equal(state.hidden.loading, 'lazy');
+  assert.equal(state.hidden.src, '', 'never requested');
+  await page.close();
+});
+
+test('every requested image is decoded before the shot', async () => {
+  const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
+  await page.goto(`${fixture.origin}/`);
+  const img = `${fixture.origin}/wp-content/uploads/2026/01/hero-300x200.jpg`;
+  await page.setContent(`<img src="${img}?1"><img loading="lazy" src="${img}?2" style="margin-top:3000px">`);
+  await page.evaluate(() => {
+    window.decoded = [];
+    const decode = HTMLImageElement.prototype.decode;
+    HTMLImageElement.prototype.decode = function decodeAndNote() {
+      window.decoded.push(this.currentSrc.split('?')[1]);
+      return decode.call(this);
+    };
+  });
+  await loadLazyContent(page, { log: () => {} });
+  assert.deepEqual((await page.evaluate(() => window.decoded)).sort(), ['1', '2']);
+  await page.close();
+});
+
+test('endless GSAP loops are put back to their start before the shot; finite tweens are left alone', async () => {
+  const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
+  // A stand-in for gsap.globalTimeline: two endless tweens and one that plays once.
+  const html = `<p>gsap</p><script>
+    window.calls = [];
+    const tween = (name, repeat) => ({
+      repeat: () => repeat,
+      progress(p) { calls.push(name + ' progress ' + p); return this; },
+      pause() { calls.push(name + ' pause'); return this; },
+    });
+    window.gsap = { globalTimeline: { getChildren: () => [tween('float', -1), tween('drift', Infinity), tween('intro', 0)] } };
+  </script>`;
+  await page.route('http://gsap.test/', (route) => route.fulfill({ contentType: 'text/html', body: html }));
+  const shot = await capture(page, 'http://gsap.test/', { wait: 0, log: () => {} });
+  assert.equal(shot.status, 200);
+  assert.deepEqual(await page.evaluate(() => window.calls), ['float progress 0', 'float pause', 'drift progress 0', 'drift pause']);
+  await page.close();
+});
+
+test('slugFor upper-cases percent escapes, so both spellings of one URL share a folder', () => {
+  assert.equal(slugFor('/caf%c3%a9/menu/'), slugFor('/caf%C3%A9/menu/'));
+  assert.equal(slugFor('/caf%c3%a9/menu/'), 'caf-C3-A9__menu');
 });
 
 test('a cookie banner is closed and reported', async () => {

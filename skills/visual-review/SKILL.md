@@ -44,8 +44,12 @@ each step as its own command rather than chaining them with `&&`. Exit 3 from sh
 site is blocking requests: wait, then rerun with a longer `--delay`; never retry in a tight loop.
 
 What makes the screenshots comparable, on both sides alike: animations and transitions are
-frozen and scroll-reveal content is forced visible; lazy images are loaded by scrolling to the
-bottom and back (capped at 60 viewports or 30 s); web fonts are awaited; a cookie banner whose
+frozen and scroll-reveal content is forced visible; endless GSAP loops (`repeat: -1`, JavaScript
+motion the freeze cannot stop) are put back to their start and paused; lazy images are made
+eager and loaded by scrolling to the bottom and back (capped at 60 viewports or 30 s), except
+`sizes="auto"` ones, which stay lazy so they pick the same `srcset` file every time; the shot
+waits only for images the page requested (a hidden slide's lazy image does not hold it) and
+for each of them to be decoded, so none paints blank; web fonts are awaited; a cookie banner whose
 button says accept, agree, got it or ok is closed and reported as `bannerClosed`. Requests to
 analytics, tag, pixel and chat hosts (Google Analytics and Tag Manager, Meta pixel, Hotjar,
 Clarity, HubSpot tracking, Intercom, Drift, LinkedIn, TikTok, Pinterest, Segment, Mixpanel,

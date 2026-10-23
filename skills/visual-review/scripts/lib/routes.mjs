@@ -8,7 +8,9 @@ export class RoutesError extends Error {}
 export function slugFor(path) {
   const trimmed = path.split(/[?#]/)[0].replace(/^\/+|\/+$/g, '');
   if (!trimmed) return 'home';
-  return trimmed.split('/').map((part) => part.replace(/[^A-Za-z0-9_.-]/g, '-')).join('__');
+  // %e2 and %E2 are one URL (RFC 3986): upper-case escapes, so both spellings share a folder
+  // on a case-insensitive disk instead of overwriting each other.
+  return trimmed.replace(/%[0-9a-f]{2}/gi, (m) => m.toUpperCase()).split('/').map((part) => part.replace(/[^A-Za-z0-9_.-]/g, '-')).join('__');
 }
 
 function templateFolder(name) {
