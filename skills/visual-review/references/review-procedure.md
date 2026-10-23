@@ -162,11 +162,13 @@ Exit 0 every row passes, 1 a row fails, 2 usage or environment error.
 
     npm run review:sheet -- --live capture/screens/live --new review/new --diff review/diff/diff.json --styles review/styles.json --out review/index.html
 
-One self-contained HTML file: per route, a row per width with the live, new and diff images side
-by side, the differing-pixel percent, pass or fail, both heights, "banner closed" where a banner
-was dismissed, and the failing style rows beneath. Each style row also carries the page `path`
-it was sampled on. Every image is embedded as data, so the file
-opens anywhere with nothing beside it, and on a big site it can run to tens of megabytes. Leave
+An index (`review/index.html`) listing every route with each width's pass or fail, percent and
+failing count, linking one page per route (`review/index-pages/<route>.html`): a row per width
+with the live, new and diff images side by side, the differing-pixel percent, pass or fail, both
+heights, "banner closed" where a banner was dismissed, and the failing style rows beneath. Each
+style row also carries the page `path` it was sampled on. Images are linked by relative path,
+never embedded, so the sheet stays small on a site of any size (142 page pairs once made a
+513 MB single file that could not be written); open it where the screenshot folders are. Leave
 `--styles` off if you skipped step 3; the sheet then shows diff rows only. Exit 0 written, 2 usage
 or environment error.
 

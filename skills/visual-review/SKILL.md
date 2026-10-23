@@ -36,7 +36,7 @@ run `node <skill-dir>/scripts/<name>.mjs <options>` from the folder that holds `
 | `review:shoot` | Full-page Chromium screenshots per route and width, plus `manifest.json` | 0 all shot, 1 a route failed, 2 usage, 3 stopped on blocks |
 | `review:diff` | Pixel diff of two screenshot folders, diff images plus `diff.json` | 0 all pass, 1 any fail, 2 usage |
 | `review:styles` | Computed styles of sampled selectors on both origins, `styles.json` | 0 all match, 1 a row fails, 2 usage or environment |
-| `review:sheet` | One self-contained HTML contact sheet: live, new and diff side by side | 0 written, 2 usage or environment |
+| `review:sheet` | The contact sheet: an index of every route plus one HTML page per route with live, new and diff side by side | 0 written, 2 usage or environment |
 | `review:check` | Re-reads `review/diff/diff.json`, `review/diff-all/diff.json` (when present) and `review/styles.json`; prints the worst failing pair | 0 every row passes, 1 a row fails or a result is missing, 2 usage |
 
 Exit 1 from diff or styles is expected while differences remain: carry on to the sheet, and run
@@ -88,13 +88,15 @@ route that is not 2xx on either side fails with one `status` row.
     review/new/               new screenshots, from the dev or preview server
     review/diff/              diff images and diff.json
     review/styles.json        style rows
-    review/index.html         the contact sheet
+    review/index.html         the contact sheet's index; review/index-pages/ holds a page per route
     docs/visual-overrides.json
                               per-route thresholds, each with its decision id and reason
                               (optional; committed, so every looser threshold is reviewed)
 
 `capture/` holds the live evidence; `review/` is regenerable and not committed. The contact sheet
-embeds every image as data, so one file opens anywhere, and it can be tens of megabytes.
+links each image by its relative path instead of embedding it, so a site with hundreds of pages
+gives an index and many small pages rather than one file too large to write: open it where the
+screenshot folders are, or copy them with it.
 
 ## The loop
 
@@ -121,7 +123,7 @@ Read `references/review-procedure.md` before the first run. In short:
 
        npm run review:sheet -- --live capture/screens/live --new review/new --diff review/diff/diff.json --styles review/styles.json --out review/index.html
 
-6. **Look.** Open `review/index.html`. For every pair, write down every visible difference you
+6. **Look.** Open `review/index.html` and each route page it links. For every pair, write down every visible difference you
    can see, failing or not, before you touch any code. Then read `diff.json` for `offset`,
    `percentUnaligned` and `reason`, and both `manifest.json` files for `bannerClosed`,
    `heightMismatch` and `error`: the sheet does not show those.

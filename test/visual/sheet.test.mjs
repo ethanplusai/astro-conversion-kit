@@ -1,7 +1,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PNG } from 'pngjs';
@@ -77,7 +77,16 @@ before(() => {
 });
 after(() => rmSync(TMP, { recursive: true, force: true }));
 
-const withoutDataUris = (html) => html.replace(/data:image\/png;base64,[A-Za-z0-9+/=]+/g, '');
+// The page files the index links, in its order, and the html of each.
+function pagesOf(out) {
+  const index = readFileSync(out, 'utf8');
+  const links = [...index.matchAll(/<a href="([^"]+\.html)">/g)].map((m) => m[1]);
+  return { index, pages: links.map((href) => ({ href, file: join(dirname(out), decodeURI(href)), html: readFileSync(join(dirname(out), decodeURI(href)), 'utf8') })) };
+}
+// Every <img src> of a page resolves, from the page's folder, to a file on disk.
+function imagesOf(page) {
+  return [...page.html.matchAll(/<img\b[^>]*\bsrc="([^"]+)"/g)].map((m) => m[1]);
+}
 
 test('--help prints usage and exits 0', async () => {
   const { code, stdout } = await run(['--help']);
@@ -90,28 +99,37 @@ test('a missing diff.json is a usage error', async () => {
   assert.equal(code, 2);
 });
 
-test('the contact sheet embeds every image and marks every failing row', async () => {
+test('the contact sheet is an index plus one page per route, every image linked by path and every failing row marked', async () => {
   const out = join(TMP, 'index.html');
-  const { code, stderr } = await run([
+  const { code, stderr, stdout } = await run([
     '--live', join(TMP, 'live'), '--new', join(TMP, 'new'), '--diff', join(TMP, 'diff', 'diff.json'),
     '--styles', join(TMP, 'styles.json'), '--out', out,
   ]);
   assert.equal(code, 0, stderr);
-  const html = readFileSync(out, 'utf8');
-  assert.match(html, /^<!doctype html>/i);
-  const images = html.match(/<img\b/g) ?? [];
+  const { index, pages } = pagesOf(out);
+  assert.match(index, /^<!doctype html>/i);
+  assert.deepEqual(pages.map((p) => p.href), ['index-pages/home.html', 'index-pages/about.html', 'index-pages/blog.html']);
+  assert.match(stdout, /3 route pages/);
+  assert.doesNotMatch(index, /<img\b/, 'the index holds no images');
+  const all = pages.map((p) => p.html).join('\n');
+  assert.doesNotMatch(index + all, /data:image/, 'no image is inlined');
+  const images = pages.flatMap((page) => imagesOf(page).map((src) => join(dirname(page.file), decodeURI(src))));
   assert.equal(images.length, liveManifest.length + newManifest.length + diff.length);
-  assert.ok(!/<img[^>]+src="(?!data:)/.test(html), 'every image is inlined');
+  for (const file of images) assert.ok(existsSync(file), `${file} exists`);
+  for (const page of pages) {
+    assert.match(page.html, /^<!doctype html>/i);
+    assert.match(page.html, /<a href="\.\.\/index\.html">/, 'each page links back to the index');
+  }
   const failingRows = diff.filter((d) => !d.pass).length + styles.filter((s) => !s.pass).length;
-  const fails = withoutDataUris(html).match(/\bFAIL\b/g) ?? [];
-  assert.equal(fails.length, failingRows);
-  assert.match(html, /3\.25\s*%/);
-  assert.match(html, /margin-top/);
-  assert.doesNotMatch(html, /line-height/, 'passing style rows are not listed');
-  assert.equal((html.match(/style only/g) ?? []).length, 1, 'only the route without screenshots is style only');
-  assert.match(html, /<h2><code>blog<\/code><\/h2>/);
-  const rowsOf = (route) => withoutDataUris(html).split('<section>').find((s) => s.includes(`<h2><code>${route}</code></h2>`))
-    .split('<div class="row').slice(1);
+  assert.equal((all.match(/\bFAIL\b/g) ?? []).length, failingRows);
+  assert.match(index, new RegExp(`${failingRows} failing rows`));
+  assert.match(all, /3\.25\s*%/);
+  assert.match(index, /3\.25\s*%/, 'the index shows each pair\'s percent');
+  assert.match(all, /margin-top/);
+  assert.doesNotMatch(all, /line-height/, 'passing style rows are not listed');
+  assert.equal((all.match(/style only/g) ?? []).length, 1, 'only the route without screenshots is style only');
+  const page = (route) => pages.find((p) => p.html.includes(`<h2><code>${route}</code></h2>`)).html;
+  const rowsOf = (route) => page(route).split('<div class="row').slice(1);
   const about1440 = rowsOf('about').find((row) => /<h3>1440 px/.test(row));
   assert.match(about1440, /<img\b/, 'the about 1440 row has its screenshots');
   assert.match(about1440, /font-size/, 'its style failures sit beneath the pair');
@@ -123,10 +141,41 @@ test('the contact sheet embeds every image and marks every failing row', async (
   assert.equal(blog.length, 1);
   assert.match(blog[0], /style only/);
   assert.doesNotMatch(blog[0], /<img\b/);
-  assert.doesNotMatch(html, /NaN/);
-  assert.match(html, /n\/a/);
-  assert.doesNotMatch(html, /href="data:/, 'each image is embedded once');
-  assert.equal((html.match(/data:image\/png;base64,/g) ?? []).length, images.length);
+  assert.doesNotMatch(index + all, /NaN/);
+  assert.match(all, /n\/a/);
+});
+
+test('200 page pairs stream to small files: no page holds more than its route, no image is inlined', async () => {
+  const dir = join(TMP, 'many');
+  const manifest = [];
+  const pairs = [];
+  writePng(join(dir, 'one.png'), [255, 255, 255]);
+  for (let i = 0; i < 100; i += 1) {
+    for (const width of [390, 1440]) {
+      const file = `page-${i}/${width}.png`;
+      for (const side of ['live', 'new', 'diff']) {
+        mkdirSync(join(dir, side, `page-${i}`), { recursive: true });
+        cpSync(join(dir, 'one.png'), join(dir, side, file));
+      }
+      manifest.push({ route: `page-${i}`, width, file, heightPx: 4, bannerClosed: false });
+      pairs.push({ route: `page-${i}`, width, percent: i % 10 === 0 ? 1.5 : 0, pass: i % 10 !== 0, heightA: 4, heightB: 4 });
+    }
+  }
+  for (const side of ['live', 'new']) writeFileSync(join(dir, side, 'manifest.json'), JSON.stringify(manifest));
+  writeFileSync(join(dir, 'diff', 'diff.json'), JSON.stringify(pairs));
+  const out = join(dir, 'all.html');
+  const { code, stderr } = await run(['--live', join(dir, 'live'), '--new', join(dir, 'new'), '--diff', join(dir, 'diff', 'diff.json'), '--out', out]);
+  assert.equal(code, 0, stderr);
+  const { index, pages } = pagesOf(out);
+  assert.equal(pages.length, 100);
+  assert.ok(pages.every((p) => p.href.startsWith('all-pages/')));
+  assert.match(index, /20 failing rows/);
+  assert.ok(statSync(out).size < 200_000, `index is ${statSync(out).size} bytes`);
+  for (const page of pages) {
+    assert.ok(statSync(page.file).size < 20_000, `${page.href} is ${statSync(page.file).size} bytes`);
+    assert.equal(imagesOf(page).length, 6);
+    for (const src of imagesOf(page)) assert.ok(existsSync(join(dirname(page.file), decodeURI(src))), src);
+  }
 });
 
 test('without --styles the sheet still renders, failing diff rows only', async () => {
@@ -135,6 +184,6 @@ test('without --styles the sheet still renders, failing diff rows only', async (
     '--live', join(TMP, 'live'), '--new', join(TMP, 'new'), '--diff', join(TMP, 'diff', 'diff.json'), '--out', out,
   ]);
   assert.equal(code, 0);
-  const html = withoutDataUris(readFileSync(out, 'utf8'));
+  const html = pagesOf(out).pages.map((p) => p.html).join('\n');
   assert.equal((html.match(/\bFAIL\b/g) ?? []).length, 1);
 });
