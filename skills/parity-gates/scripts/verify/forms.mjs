@@ -19,7 +19,6 @@ const OPTIONS = {
   endpoint: { type: 'string', default: '', description: 'the URL every POST form posts to; required when the baseline has a POST form' },
   honeypot: { type: 'string', default: '', description: 'a field name every POST form must have; allowed even where the live form had none' },
   'thank-you': { type: 'string', default: '', description: 'the page every POST form leads to: a hidden _next or redirect field set to it (the path, or an absolute URL on the canonical host), and a built page' },
-  'inert-forms': { type: 'string', default: 'inert-forms.json', description: 'JSON list of { path, form, reason, decision }: POST forms of a server feature (login, checkout) that must send nothing' },
 };
 const NOTES = `
 A GET form (method get, or no method: a search box) is compared with live as it is: the same
@@ -41,12 +40,10 @@ path must be a page in dist. The field may hold the path itself, or an absolute 
 endpoints require) whose host is the baseline's canonicalOrigin (origin when meta.json has none)
 and whose path is --thank-you. Without it the thank-you page is not checked, and the summary
 counts each form as skipped.
-A login, account, cart or checkout form is a server feature, and rewiring it to a form service
-would send passwords or billing details to that service. List such a form in --inert-forms
-(default inert-forms.json, when it exists) with its page, its 0-based index among the page's
-forms, a reason and a decision id. The gate then requires the same fields and method, an action
-of "#" and onsubmit="return false", so the form cannot send anything; the summary counts it as
-skipped, because it does not work. A listed form that can still submit fails.
+A form the static site keeps but switches off (a login or checkout it cannot serve) is listed
+in inert-forms.json, when that file exists, as { path, form, reason }, form being its 0-based
+index among the page's forms. The gate requires live's fields and method and an action that
+sends nowhere (none, "#" or javascript:), and counts the form as skipped.
 `;
 const THANK_YOU_FIELDS = ['_next', 'redirect'];
 
@@ -54,7 +51,6 @@ const THANK_YOU_FIELDS = ['_next', 'redirect'];
 export function formsOf(html) {
   return findAll(parseHtml(html), byTag('form')).map((form) => ({
     action: attr(form, 'action') || null,
-    onsubmit: attr(form, 'onsubmit') ?? null,
     method: (attr(form, 'method') || 'get').toLowerCase(),
     fields: formFields(form).map((f) => f.name),
     hidden: Object.fromEntries(
@@ -194,7 +190,9 @@ export function compareForm(path, label, expected, actual, { endpoint, honeypot,
   return failures;
 }
 
-// A form listed as inert: the same fields and method as live, and no way to send them.
+// A form listed as inert: the same fields and method as live, and an action that sends nowhere.
+const sendsNowhere = (action) => !action || action === '#' || /^javascript:/i.test(action);
+
 export function compareInertForm(path, label, expected, actual) {
   const failures = [];
   const field = (name) => (label ? `${label} ${name}` : name);
@@ -202,8 +200,7 @@ export function compareInertForm(path, label, expected, actual) {
   if (!same(want, actual.fields)) failures.push({ path, field: field('fields'), expected: want, actual: actual.fields });
   const method = (expected.method || 'get').toLowerCase();
   if (method !== actual.method) failures.push({ path, field: field('method'), expected: method, actual: actual.method });
-  if (actual.action !== '#') failures.push({ path, field: field('inert action'), expected: '#', actual: actual.action });
-  if (actual.onsubmit !== 'return false') failures.push({ path, field: field('inert onsubmit'), expected: 'return false', actual: actual.onsubmit });
+  if (!sendsNowhere(actual.action)) failures.push({ path, field: field('inert action'), expected: 'none, # or javascript:', actual: actual.action });
   return failures;
 }
 
@@ -264,9 +261,9 @@ export function checkForms({ dist, forms, endpoint, honeypot = '', thankYou = ''
     const candidates = pageFiles(thankYou, format);
     if (!candidates.some((c) => files.includes(c))) failures.push({ path: thankYou, field: 'thank-you', expected: candidates[0], actual: null });
   }
-  const inertSkip = inertCount ? { skipped: inertCount, skipReason: 'inert server-feature forms, they do not work' } : {};
+  const inertSkip = inertCount ? { skipped: inertCount, skipReason: 'inert forms' } : {};
   if (thankYou || formCount === 0) return { checked, failures, notes, ...inertSkip };
-  return { checked, failures, skipped: formCount + inertCount, skipReason: `thank-you not checked${inertCount ? ', inert server-feature forms' : ''}`, notes: [...notes, 'thank-you: not checked (no --thank-you)'] };
+  return { checked, failures, skipped: formCount + inertCount, skipReason: `thank-you not checked${inertCount ? ', inert forms' : ''}`, notes: [...notes, 'thank-you: not checked (no --thank-you)'] };
 }
 
 function main() {
@@ -277,10 +274,10 @@ function main() {
   const metaFile = join(args.baseline, 'meta.json');
   const meta = existsSync(metaFile) ? readJson(metaFile) : {};
   const origins = [meta.origin, meta.canonicalOrigin].map((o) => originOf(o ?? '')).filter(Boolean);
-  const inert = existsSync(args.inertForms) ? readJson(args.inertForms) : [];
+  const inert = existsSync('inert-forms.json') ? readJson('inert-forms.json') : [];
   for (const entry of inert) {
-    if (!entry.path || !Number.isInteger(entry.form) || !entry.reason || !entry.decision) {
-      process.stderr.write(`${NAME}: every ${args.inertForms} entry needs path, form, reason and decision\n`);
+    if (!entry.path || !Number.isInteger(entry.form) || !entry.reason) {
+      process.stderr.write(`${NAME}: every inert-forms.json entry needs path, form and reason\n`);
       process.exit(2);
     }
   }
