@@ -47,7 +47,7 @@ const decode = (value) => {
 const unescapeXml = (s) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
 
 export function locs(xml) {
-  return [...xml.matchAll(/<loc>\s*([^<]*?)\s*<\/loc>/g)].map((m) => unescapeXml(m[1]));
+  return [...xml.matchAll(/<loc>\s*(?:<!\[CDATA\[\s*([^\]]*?)\s*\]\]>|([^<]*?))\s*<\/loc>/g)].map((m) => m[1] ?? unescapeXml(m[2]));
 }
 
 export const itemCount = (xml) => (xml.match(/<(?:item|entry)[\s>]/g) ?? []).length;
