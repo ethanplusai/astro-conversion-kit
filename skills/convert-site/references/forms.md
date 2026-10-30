@@ -26,6 +26,15 @@ live like a GET form (the same full action URL, method and fields) and notes "N 
 is (posts to <host>)"; rewiring one to the endpoint fails the gate. A site whose POST forms
 all post elsewhere needs no `--endpoint` and no form id.
 
+## Server features: inert, never rewired
+
+A login, account, password-reset, cart, coupon or checkout form cannot work on a static site, and
+rewiring it would send passwords or billing details to the form service. Never rewire one. Keep
+its markup and fields, set `action="#"` and `onsubmit="return false"`, and list it in
+`inert-forms.json` as `{ path, form, reason, decision }`, where `form` is its 0-based index among
+the page's forms. The forms gate requires exactly that and counts it as skipped: it does not work,
+and the PR and runbook say so.
+
 ## What stays the same
 
 The forms gate compares each built form with `baseline/forms.json`: the same field names in
