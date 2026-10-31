@@ -5,7 +5,7 @@ import { createServer } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { gzipSync } from 'node:zlib';
-import { tmpdir } from 'node:os';
+import { networkInterfaces, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { startFixture } from '../fixture/serve.mjs';
 import { compileSource, fillDestination } from '../../skills/convert-site/scripts/lib/review-routes.mjs';
@@ -191,6 +191,19 @@ test('serves dist/, applies vercel.json redirects and rewrites, proxies other or
     }
   } finally {
     await stop(child);
+  }
+});
+
+test('listens on loopback only, not on the machine\'s network addresses', async (t) => {
+  const external = Object.values(networkInterfaces()).flat().find((a) => a.family === 'IPv4' && !a.internal);
+  if (!external) return t.skip('no non-loopback IPv4 address on this machine');
+  const port = await freePort();
+  const { child } = await serve(['--dir', site, '--port', String(port)]);
+  try {
+    assert.equal((await fetch(`http://127.0.0.1:${port}/`)).status, 200);
+    await assert.rejects(fetch(`http://${external.address}:${port}/`));
+  } finally {
+    child.kill('SIGTERM');
   }
 });
 
