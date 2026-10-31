@@ -278,7 +278,7 @@ async function serveForeground({ dir, port }) {
       if (err.code === 'EADDRINUSE') fail(inUse(port, lsofListener(port) ?? { pid: 'unknown', command: 'unknown command' }));
       else fail(new UsageError(`cannot listen on port ${port}: ${err.message}`));
     });
-    server.listen(port, done);
+    server.listen(port, '127.0.0.1', done);
   });
   const stop = () => server.close(() => process.exit(0));
   process.once('SIGTERM', stop);
