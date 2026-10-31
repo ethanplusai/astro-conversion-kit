@@ -40,6 +40,10 @@ path must be a page in dist. The field may hold the path itself, or an absolute 
 endpoints require) whose host is the baseline's canonicalOrigin (origin when meta.json has none)
 and whose path is --thank-you. Without it the thank-you page is not checked, and the summary
 counts each form as skipped.
+A form the static site keeps but switches off (a login or checkout it cannot serve) is listed
+in inert-forms.json, when that file exists, as { path, form, reason }, form being its 0-based
+index among the page's forms. The gate requires live's fields and method and an action that
+sends nowhere (none, "#" or javascript:), and counts the form as skipped.
 `;
 const THANK_YOU_FIELDS = ['_next', 'redirect'];
 
@@ -186,7 +190,23 @@ export function compareForm(path, label, expected, actual, { endpoint, honeypot,
   return failures;
 }
 
-export function checkForms({ dist, forms, endpoint, honeypot = '', thankYou = '', meta = {}, paths = () => true }) {
+// A form listed as inert: the same fields and method as live, and an action that sends nowhere.
+const sendsNowhere = (action) => !action || action === '#' || /^javascript:/i.test(action);
+
+export function compareInertForm(path, label, expected, actual) {
+  const failures = [];
+  const field = (name) => (label ? `${label} ${name}` : name);
+  const want = expected.fields.map((f) => (typeof f === 'string' ? f : f.name));
+  if (!same(want, actual.fields)) failures.push({ path, field: field('fields'), expected: want, actual: actual.fields });
+  const method = (expected.method || 'get').toLowerCase();
+  if (method !== actual.method) failures.push({ path, field: field('method'), expected: method, actual: actual.method });
+  if (!sendsNowhere(actual.action)) failures.push({ path, field: field('inert action'), expected: 'none, # or javascript:', actual: actual.action });
+  return failures;
+}
+
+export function checkForms({ dist, forms, endpoint, honeypot = '', thankYou = '', meta = {}, paths = () => true, inert = [] }) {
+  const inertKeys = new Set(inert.map((entry) => `${entry.path}#${entry.form}`));
+  let inertCount = 0;
   const siteHost = siteHostOf(meta);
   const origins = [meta.origin, meta.canonicalOrigin].map((o) => originOf(o ?? '')).filter(Boolean);
   let getCount = 0;
@@ -212,6 +232,11 @@ export function checkForms({ dist, forms, endpoint, honeypot = '', thankYou = ''
     }
     expected.forEach((form, i) => {
       const label = expected.length > 1 ? `form ${i + 1}` : '';
+      if (inertKeys.has(`${path}#${i}`)) {
+        inertCount += 1;
+        failures.push(...compareInertForm(path, label, form, actual[i]));
+        return;
+      }
       const host = externalHost(form, path, origins);
       if (host) {
         keptHosts.push(host);
@@ -236,8 +261,9 @@ export function checkForms({ dist, forms, endpoint, honeypot = '', thankYou = ''
     const candidates = pageFiles(thankYou, format);
     if (!candidates.some((c) => files.includes(c))) failures.push({ path: thankYou, field: 'thank-you', expected: candidates[0], actual: null });
   }
-  if (thankYou || formCount === 0) return { checked, failures, notes };
-  return { checked, failures, skipped: formCount, skipReason: 'thank-you not checked', notes: [...notes, 'thank-you: not checked (no --thank-you)'] };
+  const inertSkip = inertCount ? { skipped: inertCount, skipReason: 'inert forms' } : {};
+  if (thankYou || formCount === 0) return { checked, failures, notes, ...inertSkip };
+  return { checked, failures, skipped: formCount + inertCount, skipReason: `thank-you not checked${inertCount ? ', inert forms' : ''}`, notes: [...notes, 'thank-you: not checked (no --thank-you)'] };
 }
 
 function main() {
@@ -248,8 +274,16 @@ function main() {
   const metaFile = join(args.baseline, 'meta.json');
   const meta = existsSync(metaFile) ? readJson(metaFile) : {};
   const origins = [meta.origin, meta.canonicalOrigin].map((o) => originOf(o ?? '')).filter(Boolean);
-  const postsToSite = (form, path) => isPost(form) && !externalHost(form, path, origins);
-  const withForms = Object.entries(forms).filter(([path, list]) => args.paths(path) && list.some((form) => postsToSite(form, path)));
+  const inert = existsSync('inert-forms.json') ? readJson('inert-forms.json') : [];
+  for (const entry of inert) {
+    if (!entry.path || !Number.isInteger(entry.form) || !entry.reason) {
+      process.stderr.write(`${NAME}: every inert-forms.json entry needs path, form and reason\n`);
+      process.exit(2);
+    }
+  }
+  const inertKeys = new Set(inert.map((entry) => `${entry.path}#${entry.form}`));
+  const postsToSite = (form, path, i) => isPost(form) && !externalHost(form, path, origins) && !inertKeys.has(`${path}#${i}`);
+  const withForms = Object.entries(forms).filter(([path, list]) => args.paths(path) && list.some((form, i) => postsToSite(form, path, i)));
   if (withForms.length > 0 && !args.endpoint) {
     process.stderr.write(`${NAME}: --endpoint <url> is required: the baseline has POST forms on ${withForms.map(([p]) => p).join(', ')}\n`);
     process.exit(2);
@@ -262,6 +296,7 @@ function main() {
     thankYou: args.thankYou,
     meta,
     paths: args.paths,
+    inert,
   });
   report(NAME, results, { json: args.json });
 }

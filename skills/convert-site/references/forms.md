@@ -26,6 +26,14 @@ live like a GET form (the same full action URL, method and fields) and notes "N 
 is (posts to <host>)"; rewiring one to the endpoint fails the gate. A site whose POST forms
 all post elsewhere needs no `--endpoint` and no form id.
 
+## Forms the static site cannot serve
+
+A login, account, cart or checkout form needs a server, and rewiring it to a form service would
+send passwords or payment details there. Never rewire one. How to handle it is a judgement for
+the site: keep it switched off, link out to wherever that feature will live, or replace it with
+an embed. A form kept but switched off gets an action that sends nowhere and a row in
+`inert-forms.json` (`{ path, form, reason }`); the PR and runbook say it does not work.
+
 ## What stays the same
 
 The forms gate compares each built form with `baseline/forms.json`: the same field names in

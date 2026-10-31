@@ -249,6 +249,8 @@ export function rewriteRef(ref, base, siteOrigin) {
     return null;
   }
   if (resolved.origin === PLACEHOLDER || resolved.origin === siteOrigin) {
+    // A live URL with a doubled slash (https://site//a.ttf) must not become protocol-relative.
+    resolved.pathname = resolved.pathname.replace(/^\/{2,}/, '/');
     return resolved.pathname + resolved.search + resolved.hash;
   }
   return absolute || value.startsWith('//') ? null : resolved.href;
