@@ -140,14 +140,21 @@ test('a state file holding null or an array exits 2 without a crash', (t) => {
 test('an unwritable state directory exits 2 with a message, not a stack trace', (t) => {
   const dir = site(t);
   mkdirSync(join(dir, '.conversion'));
-  chmodSync(join(dir, '.conversion'), 0o500);
+  const account = `${process.env.USERDOMAIN}\\${process.env.USERNAME}`;
+  const permissions = (args) => {
+    const result = spawnSync('icacls', [join(dir, '.conversion'), ...args], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+  };
+  if (process.platform === 'win32') permissions(['/deny', `${account}:(W)`]);
+  else chmodSync(join(dir, '.conversion'), 0o500);
   let result;
   try {
     result = state(dir, 'set', 'hosting', '"vercel"');
   } finally {
-    chmodSync(join(dir, '.conversion'), 0o700);
+    if (process.platform === 'win32') permissions(['/remove:d', account]);
+    else chmodSync(join(dir, '.conversion'), 0o700);
   }
   assert.equal(result.status, 2);
-  assert.match(result.stderr, /^state: .*EACCES/);
+  assert.match(result.stderr, process.platform === 'win32' ? /^state: .*EPERM/ : /^state: .*EACCES/);
   assert.doesNotMatch(result.stderr, /\n\s+at /);
 });
