@@ -241,7 +241,7 @@ test('the real copied scripts answer --help from inside the scaffolded site', (t
   const result = run(baseArgs(dir, realKit(t)));
   assert.equal(result.status, 0, result.stdout + result.stderr);
   // Stands in for npm install: the site resolves the pinned packages from its own node_modules.
-  symlinkSync(join(ROOT, 'node_modules'), join(dir, 'node_modules'), 'dir');
+  symlinkSync(join(ROOT, 'node_modules'), join(dir, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
   const scripts = ['scripts/review/shoot.mjs', 'scripts/state.mjs', 'scripts/media-upload.mjs', 'scripts/review-serve.mjs', 'scripts/verify-live.mjs',
     'scripts/copy-assets.mjs', 'scripts/link-exceptions.mjs']
     .filter((script) => script !== 'scripts/verify-live.mjs' || existsSync(join(dir, script)));

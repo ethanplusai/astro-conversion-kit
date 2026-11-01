@@ -424,7 +424,7 @@ test('a check returning a malformed item is not covered and the run still exits 
   const copy = join(root, 'skills-copy');
   t.after(() => rmSync(copy, { recursive: true, force: true }));
   cpSync(skills('suggest-improvements'), join(copy, 'suggest-improvements'), { recursive: true });
-  symlinkSync(fileURLToPath(new URL('../../node_modules', import.meta.url)), join(copy, 'node_modules'), 'dir');
+  symlinkSync(fileURLToPath(new URL('../../node_modules', import.meta.url)), join(copy, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
   writeFileSync(join(copy, 'suggest-improvements', 'scripts', 'checks', 'bad-shape.mjs'), [
     "import { defineCheck } from '../lib/item.mjs';",
     "export default defineCheck({ id: 'bad-shape', title: 'Bad shape', category: 'seo', why: 'w', effort: 'XL', risk: 'low', applyable: false,",

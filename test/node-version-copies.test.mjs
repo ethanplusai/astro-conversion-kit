@@ -53,7 +53,7 @@ test('every top-level skill script answers --help from a copy of the skills plac
   for (const skill of SKILLS) {
     cpSync(join(ROOT, 'skills', skill), join(elsewhere, 'skills', skill), { recursive: true });
   }
-  symlinkSync(join(ROOT, 'node_modules'), join(elsewhere, 'node_modules'), 'dir');
+  symlinkSync(join(ROOT, 'node_modules'), join(elsewhere, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
   for (const skill of SKILLS) {
     const dir = join(elsewhere, 'skills', skill, 'scripts');
     if (!existsSync(dir)) continue;

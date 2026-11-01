@@ -274,7 +274,7 @@ export async function scaffold({ site, live, trailingSlash }) {
       rmSync(join(site, 'node_modules'), { recursive: true, force: true });
     }
   }
-  symlinkSync(cache, join(site, 'node_modules'), 'dir');
+  symlinkSync(cache, join(site, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
 
   const decisions = state(site).decisions;
   const table = ['| Id | Date | Topic | Choice | Default | Reason | Cost if wrong |', '| --- | --- | --- | --- | --- | --- | --- |',
