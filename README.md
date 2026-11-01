@@ -154,7 +154,8 @@ a baseline set shipped in `vercel.json` or `_headers`. More in [docs/security.md
 - git, and a GitHub account with `gh` logged in if you want the repo and PR created for you.
 - A Vercel or Cloudflare account for staging and production. Optional for the conversion itself.
 - Playwright's Chromium (`npx playwright install chromium`), for screenshots and visual review.
-- macOS or Linux. Windows is not supported in this version.
+- macOS, Linux or Windows. On Windows the agent runs the skills' shell commands in Git Bash; see
+  the [FAQ](docs/faq.md#can-i-run-it-on-windows).
 - A coding agent that can run shell commands. If your agent has its own browser or can run
   subagents, the skills use them; without them every step still runs.
 
