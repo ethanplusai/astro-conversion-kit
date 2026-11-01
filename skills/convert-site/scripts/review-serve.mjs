@@ -292,7 +292,7 @@ async function startBackground({ dir, port }) {
   const log = openSync(logPath, 'w');
   const self = fileURLToPath(import.meta.url);
   const child = spawn(process.execPath, [self, '--dir', dir, '--port', String(port)], {
-    detached: true, stdio: ['ignore', log, log],
+    detached: true, stdio: ['ignore', log, log], windowsHide: true,
   });
   let exited = null;
   child.once('exit', (code) => { exited = code ?? 1; });
@@ -317,6 +317,13 @@ async function startBackground({ dir, port }) {
 function commandOf(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return null;
   try {
+    if (process.platform === 'win32') {
+      // Windows has no ps; WMI has the command line.
+      return execFileSync(join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), [
+        '-NoProfile', '-NonInteractive', '-Command',
+        `(Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}').CommandLine`,
+      ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, timeout: 5000 }).trim() || null;
+    }
     return execFileSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || null;
   } catch {
     return null;
