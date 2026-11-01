@@ -184,8 +184,8 @@ test('init scaffolds templates, copies scripts, commits on main and switches to 
   const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
   assert.equal(pkg.name, 'fixture-roofing-co');
   assert.equal(pkg.scripts.verify, 'node scripts/verify/run-all.mjs');
-  assert.equal(pkg.scripts['verify:proposals'], 'PROPOSALS=on node scripts/verify/run-all.mjs');
-  assert.equal(pkg.scripts['verify:release'], 'PUBLIC_INDEXABLE=true node scripts/verify/run-all.mjs');
+  assert.equal(pkg.scripts['verify:proposals'], 'node scripts/verify/run-all.mjs --with-proposals');
+  assert.equal(pkg.scripts['verify:release'], 'node scripts/verify/run-all.mjs --release');
   assert.equal(pkg.scripts.baseline, 'node scripts/build-baseline.mjs --capture capture --out baseline');
   assert.equal(pkg.scripts['redirects:build'],
     'node scripts/build-redirects.mjs --csv redirects.csv --host vercel --out vercel.json --trailing-slash always --routes baseline/routes.json');

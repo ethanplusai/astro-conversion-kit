@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { buildFixtureBaseline } from './fixtures/baseline.mjs';
 import { DIST_ORIGIN, makeDist } from './fixtures/make-dist.mjs';
 import { gateScript, runGate } from './fixtures/run-gate.mjs';
+import { gateFiles, optionsFromHelp } from '../../skills/parity-gates/scripts/verify/run-all.mjs';
 
 const GATES = readdirSync(dirname(gateScript('run-all')))
   .filter((f) => f.endsWith('.mjs') && f !== 'run-all.mjs')
@@ -47,6 +48,17 @@ test('runs every gate in order and prints All N gates passed', async () => {
   assert.match(result.stdout, new RegExp(`^All ${GATES.length} gates passed$`, 'm'));
 });
 
+// A release build compares URLs exactly, so these runs name the build's origin.
+test('--release enables release checks, alone or with --with-proposals', async () => {
+  const staging = await runAll(good, ['--origin', DIST_ORIGIN]);
+  assert.equal(staging.code, 0, staging.stdout + staging.stderr);
+  for (const args of [['--release'], ['--release', '--with-proposals']]) {
+    const release = await runAll(good, [...args, '--origin', DIST_ORIGIN]);
+    assert.equal(release.code, 1, release.stdout + release.stderr);
+    assert.match(release.stdout + release.stderr, /PUBLIC_INDEXABLE=true/);
+  }
+});
+
 test('stops at the first failing gate with its exit code', async () => {
   const bad = build('dist-bad', { bad: ['changed-title'] });
   const result = await runAll(bad, ['--origin', DIST_ORIGIN]);
@@ -80,9 +92,44 @@ test('verify:proposals passes with a markup proposal, which no gate compares; an
   assert.match(unknown.stdout + unknown.stderr, /field "html" is not one of .*\|markup/);
 });
 
+test('--with-proposals loads markup proposals and rejects unknown fields only when enabled', async (t) => {
+  const proposals = join(root, 'proposals.json');
+  t.after(() => rmSync(proposals, { force: true }));
+  const markup = {
+    id: 'relative-links', path: '/about/', field: 'markup', from: '<a href="https://www.example.com/contact/">',
+    to: '<a href="/contact/">', reason: 'links stay on the preview host', approvedBy: 'proposed', date: '2026-10-23',
+  };
+  writeFileSync(proposals, JSON.stringify([markup]));
+  const on = await runAll(good, ['--with-proposals', '--origin', DIST_ORIGIN]);
+  assert.equal(on.code, 0, on.stdout + on.stderr);
+  assert.match(on.stdout, new RegExp(`^All ${GATES.length} gates passed$`, 'm'));
+  assert.doesNotMatch(on.stdout, /exception/);
+
+  writeFileSync(proposals, JSON.stringify([{ ...markup, field: 'html' }]));
+  const unknown = await runAll(good, ['--with-proposals', '--origin', DIST_ORIGIN]);
+  assert.equal(unknown.code, 2, unknown.stdout + unknown.stderr);
+  assert.match(unknown.stdout + unknown.stderr, /field "html" is not one of .*\|markup/);
+
+  const off = await runAll(good, ['--origin', DIST_ORIGIN]);
+  assert.equal(off.code, 0, off.stdout + off.stderr);
+});
+
+test('no gate lists a reserved run-all option', async () => {
+  for (const file of gateFiles()) {
+    const help = await runGate(file.slice(0, -4), ['--help']);
+    assert.equal(help.code, 0, file + ': ' + help.stderr);
+    const options = optionsFromHelp(help.stdout);
+    for (const flag of ['release', 'with-proposals']) {
+      assert.equal(options.has(flag), false, `${file} lists --${flag}`);
+    }
+  }
+});
+
 test('an option no gate accepts exits 2; --help exits 0', async () => {
   assert.equal((await runAll(good, ['--bogus'])).code, 2);
   const help = await runGate('run-all', ['--help']);
   assert.equal(help.code, 0);
   assert.match(help.stdout, /Usage: run-all/);
+  assert.match(help.stdout, /^  --release\s+run gates with PUBLIC_INDEXABLE=true$/m);
+  assert.match(help.stdout, /^  --with-proposals\s+run gates with PROPOSALS=on$/m);
 });
