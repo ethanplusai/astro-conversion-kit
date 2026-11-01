@@ -5,7 +5,7 @@ import { execFileSync, execSync } from 'node:child_process';
 import {
   cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync,
 } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { assertNodeVersion } from './lib/node-version.mjs';
@@ -156,7 +156,7 @@ function substitute(text, values) {
 
 function copyTemplates(templateDir, dir, values, skip) {
   for (const source of walk(templateDir)) {
-    const rel = relative(templateDir, source);
+    const rel = relative(templateDir, source).split(sep).join('/');
     if (skip.includes(rel)) continue;
     const target = join(dir, rel);
     const text = substitute(readFileSync(source, 'utf8'), values);
