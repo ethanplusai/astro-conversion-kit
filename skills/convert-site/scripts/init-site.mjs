@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Scaffold a new Astro site repository from the kit's templates and copy in the kit's scripts.
 // Exit 0 success, 2 usage or environment error (including a non-empty target directory).
-import { execFileSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import {
   cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync,
 } from 'node:fs';
@@ -121,9 +121,15 @@ function existingEntries(dir) {
   return readdirSync(dir);
 }
 
+// npm is npm.cmd on Windows, which Node starts only through a shell. These arguments are fixed
+// tokens, so on Windows they are joined into one command line.
+function npm(args, options) {
+  return process.platform === 'win32' ? execSync(['npm', ...args].join(' '), options) : execFileSync('npm', args, options);
+}
+
 function latestAstro7() {
   try {
-    const out = execFileSync('npm', ['view', 'astro@7', 'version', '--json'], {
+    const out = npm(['view', 'astro@7', 'version', '--json'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 60_000,
@@ -256,7 +262,7 @@ function commitAndBranch(dir) {
 
 function npmInstall(dir) {
   try {
-    execFileSync('npm', ['install', '--no-audit', '--no-fund'], { cwd: dir, stdio: 'inherit' });
+    npm(['install', '--no-audit', '--no-fund'], { cwd: dir, stdio: 'inherit' });
   } catch {
     throw new UsageError(
       'npm install failed. The scaffold is written but not committed; do not run init-site again.\n' +
