@@ -117,4 +117,8 @@ domains and the old host are changed by you, following the runbook.
 
 ## Can I run it on Windows?
 
-Not in this version. Use macOS or Linux. WSL may work but is not tested.
+Yes. CI runs the whole suite on Windows, and the site's npm scripts run in any shell. The commands
+in the skills' references are POSIX shell, such as `PUBLIC_INDEXABLE=true npm run build`, so on
+Windows the agent runs them in Git Bash, which comes with Git for Windows. Set `MSYS_NO_PATHCONV=1`
+there: without it Git Bash rewrites an argument such as `/thank-you/` into a Windows path before
+Node sees it.

@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync, execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, copyFileSync, readFileSync, appendFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, copyFileSync, readFileSync, readdirSync, appendFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const KIT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -19,8 +19,9 @@ function run(dir, script, ...args) {
   return spawnSync(process.execPath, [join(dir, script), ...args], { cwd: dir, encoding: 'utf8' });
 }
 
+// Every node_modules folder under dir, one per line ('' when there is none).
 function findNodeModules(dir) {
-  return execFileSync('find', [dir, '-name', 'node_modules'], { encoding: 'utf8' }).trim();
+  return readdirSync(dir, { recursive: true }).filter((path) => basename(path) === 'node_modules').join('\n');
 }
 
 test('sync-launch-skills vendors the three launch skills at the locked sha', async (t) => {
@@ -42,8 +43,12 @@ test('sync-launch-skills vendors the three launch skills at the locked sha', asy
   git(dir, 'commit', '-q', '-m', 'chore: kit');
 
   const lock = JSON.parse(readFileSync(join(dir, 'launch-skills.lock.json'), 'utf8'));
-  // One real sync; every assertion below reads its result.
-  const sync = run(dir, 'scripts/sync-launch-skills.mjs');
+  // One real sync; every assertion below reads its result. It runs with core.autocrlf=true, which Git
+  // for Windows sets system-wide, so the line-ending check below holds on every platform.
+  const sync = spawnSync(process.execPath, [join(dir, 'scripts/sync-launch-skills.mjs')], {
+    cwd: dir, encoding: 'utf8',
+    env: { ...process.env, GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.autocrlf', GIT_CONFIG_VALUE_0: 'true' },
+  });
 
   await t.test('the lock names the upstream repo and a full sha', () => {
     assert.equal(lock.repo, 'https://github.com/ethanplusai/website-launch-skills');
@@ -65,6 +70,13 @@ test('sync-launch-skills vendors the three launch skills at the locked sha', asy
     }
     assert.ok(existsSync(join(dir, 'skills', 'launch-audit', 'scripts', 'lib')), 'launch-audit/scripts/lib/');
     assert.equal(findNodeModules(join(dir, 'skills')), '');
+  });
+
+  await t.test('the copies keep the line endings upstream committed, whatever core.autocrlf says', () => {
+    for (const skill of SKILLS) {
+      const text = readFileSync(join(dir, 'skills', skill, 'SKILL.md'), 'utf8');
+      assert.ok(!text.includes('\r\n'), `${skill}/SKILL.md came out with CRLF line endings`);
+    }
   });
 
   await t.test('pre-launch runs through the kit path', () => {

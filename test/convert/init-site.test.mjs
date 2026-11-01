@@ -5,7 +5,7 @@ import {
   mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, cpSync, existsSync, statSync, symlinkSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname, relative } from 'node:path';
+import { join, dirname, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -94,7 +94,7 @@ function walk(dir, base = dir) {
   return readdirSync(dir).flatMap((name) => {
     if (name === '.git') return [];
     const full = join(dir, name);
-    return statSync(full).isDirectory() ? walk(full, base) : [relative(base, full)];
+    return statSync(full).isDirectory() ? walk(full, base) : [relative(base, full).split(sep).join('/')];
   });
 }
 
@@ -184,8 +184,8 @@ test('init scaffolds templates, copies scripts, commits on main and switches to 
   const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
   assert.equal(pkg.name, 'fixture-roofing-co');
   assert.equal(pkg.scripts.verify, 'node scripts/verify/run-all.mjs');
-  assert.equal(pkg.scripts['verify:proposals'], 'PROPOSALS=on node scripts/verify/run-all.mjs');
-  assert.equal(pkg.scripts['verify:release'], 'PUBLIC_INDEXABLE=true node scripts/verify/run-all.mjs');
+  assert.equal(pkg.scripts['verify:proposals'], 'node scripts/verify/run-all.mjs --with-proposals');
+  assert.equal(pkg.scripts['verify:release'], 'node scripts/verify/run-all.mjs --release');
   assert.equal(pkg.scripts.baseline, 'node scripts/build-baseline.mjs --capture capture --out baseline');
   assert.equal(pkg.scripts['redirects:build'],
     'node scripts/build-redirects.mjs --csv redirects.csv --host vercel --out vercel.json --trailing-slash always --routes baseline/routes.json');
@@ -241,7 +241,7 @@ test('the real copied scripts answer --help from inside the scaffolded site', (t
   const result = run(baseArgs(dir, realKit(t)));
   assert.equal(result.status, 0, result.stdout + result.stderr);
   // Stands in for npm install: the site resolves the pinned packages from its own node_modules.
-  symlinkSync(join(ROOT, 'node_modules'), join(dir, 'node_modules'), 'dir');
+  symlinkSync(join(ROOT, 'node_modules'), join(dir, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
   const scripts = ['scripts/review/shoot.mjs', 'scripts/state.mjs', 'scripts/media-upload.mjs', 'scripts/review-serve.mjs', 'scripts/verify-live.mjs',
     'scripts/copy-assets.mjs', 'scripts/link-exceptions.mjs']
     .filter((script) => script !== 'scripts/verify-live.mjs' || existsSync(join(dir, script)));

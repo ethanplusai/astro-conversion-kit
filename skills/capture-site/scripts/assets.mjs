@@ -303,7 +303,8 @@ async function main() {
     }
     const file = known ?? join(out, `${stem}${extensionFor(url, res.headers['content-type'])}`);
     if (file !== download) renameSync(download, file);
-    entries.push({ kind, url, file: `assets/${file.slice(out.length + 1)}`, status: 200, note: null });
+    const relativeFile = file.slice(out.length + 1);
+    entries.push({ kind, url, file: `assets/${process.platform === 'win32' ? relativeFile.replaceAll('\\', '/') : relativeFile}`, status: 200, note: null });
   };
   const absent = (kind, note) => entries.push({ kind, url: null, file: null, status: null, note });
 

@@ -274,8 +274,9 @@ test('fingerprint stops after the home page when it is blocked or unreachable', 
 test('fetchPaced waits delayMs between requests to the same host', async () => {
   const stub = await startStub({ '/': { body: 'x' } });
   try {
-    await fetchPaced(`${stub.origin}/`, { delayMs: 0, trusted: [stub.origin] });
+    // The delay runs from the first request's start, so the clock starts before that request.
     const started = Date.now();
+    await fetchPaced(`${stub.origin}/`, { delayMs: 0, trusted: [stub.origin] });
     await fetchPaced(`${stub.origin}/`, { delayMs: 150, trusted: [stub.origin] });
     assert.ok(Date.now() - started >= 140);
   } finally {

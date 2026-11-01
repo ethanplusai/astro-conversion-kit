@@ -17,6 +17,8 @@ Runs every gate in ${HERE} in alphabetical order, passing each one the options i
 stops at the first gate that fails. Every option of every gate is accepted here; see each gate's
 --help (node <gate>.mjs --help).
 
+  --release               run gates with PUBLIC_INDEXABLE=true
+  --with-proposals        run gates with PROPOSALS=on
   --help                  show this help
 
 Exit codes: 0 every gate passed, otherwise the exit code of the first gate that did not pass
@@ -58,7 +60,18 @@ export function splitArgs(argv, known) {
 
 function main() {
   assertNodeVersion();
-  const argv = process.argv.slice(2);
+  const env = { ...process.env };
+  const argv = process.argv.slice(2).filter((arg) => {
+    if (arg === '--release') {
+      env.PUBLIC_INDEXABLE = 'true';
+      return false;
+    }
+    if (arg === '--with-proposals') {
+      env.PROPOSALS = 'on';
+      return false;
+    }
+    return true;
+  });
   if (argv.includes('--help') || argv.includes('-h')) {
     process.stdout.write(USAGE);
     return;
@@ -69,7 +82,14 @@ function main() {
       process.stderr.write(`run-all: ${file} --help exited ${help.status}\n${help.stderr ?? ''}`);
       process.exit(2);
     }
-    return { file, options: optionsFromHelp(help.stdout) };
+    const options = optionsFromHelp(help.stdout);
+    for (const flag of ['release', 'with-proposals']) {
+      if (options.has(flag)) {
+        process.stderr.write(`run-all: ${file} lists reserved option --${flag}\n`);
+        process.exit(2);
+      }
+    }
+    return { file, options };
   });
   const known = new Map(gates.flatMap((g) => [...g.options]));
   let parsed;
@@ -81,7 +101,7 @@ function main() {
   }
   for (const gate of gates) {
     const args = parsed.filter((p) => gate.options.has(p.flag)).flatMap((p) => p.tokens);
-    const result = spawnSync(process.execPath, [join(HERE, gate.file), ...args], { stdio: 'inherit' });
+    const result = spawnSync(process.execPath, [join(HERE, gate.file), ...args], { stdio: 'inherit', env });
     if (result.status !== 0) process.exit(result.status ?? 2);
   }
   process.stdout.write(`All ${gates.length} gates passed\n`);

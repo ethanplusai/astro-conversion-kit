@@ -3,7 +3,7 @@
 // commands from SITE and returning what its proof needs. The test plays the agent; where a phase
 // needs an account (a GitHub repo, a Vercel deploy) the stand-ins are named at the function.
 // Scripts run as child processes so the in-process fixture keeps answering.
-import { execFile } from 'node:child_process';
+import { exec, execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
@@ -48,12 +48,22 @@ function baseEnv() {
   return env;
 }
 
-// Resolves { code, stdout, stderr, command } whatever the exit code.
+// Resolves { code, stdout, stderr, command } whatever the exit code. On Windows npm and npx are
+// .cmd files, which start only through a shell, so their arguments (script names, flags, local
+// paths and URLs) are checked and joined into one command line.
 export function sh(command, args, { cwd, env = {}, timeout = 300_000 } = {}) {
+  const options = { cwd, env: { ...baseEnv(), ...env }, timeout, maxBuffer: 64 * 1024 * 1024 };
+  const viaShell = process.platform === 'win32' && (command === 'npm' || command === 'npx');
+  if (viaShell) {
+    const unsafe = args.find((arg) => !/^[\w@./:=,+-]+$/.test(arg));
+    if (unsafe !== undefined) throw new Error(`sh: ${command} argument ${JSON.stringify(unsafe)} needs quoting on Windows`);
+  }
   return new Promise((done) => {
-    execFile(command, args, { cwd, env: { ...baseEnv(), ...env }, timeout, maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
+    const finish = (error, stdout, stderr) => {
       done({ code: error ? (typeof error.code === 'number' ? error.code : 1) : 0, stdout, stderr, command: [command, ...args].join(' ') });
-    });
+    };
+    if (viaShell) exec([command, ...args].join(' '), options, finish);
+    else execFile(command, args, options, finish);
   });
 }
 
@@ -274,7 +284,7 @@ export async function scaffold({ site, live, trailingSlash }) {
       rmSync(join(site, 'node_modules'), { recursive: true, force: true });
     }
   }
-  symlinkSync(cache, join(site, 'node_modules'), 'dir');
+  symlinkSync(cache, join(site, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
 
   const decisions = state(site).decisions;
   const table = ['| Id | Date | Topic | Choice | Default | Reason | Cost if wrong |', '| --- | --- | --- | --- | --- | --- | --- |',
