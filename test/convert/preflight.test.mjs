@@ -16,7 +16,14 @@ const SLEEP_MARK = 7357;
 // True while a process matching pattern is alive; retries briefly so a just-killed one can be reaped.
 function strayProcess(pattern) {
   for (let attempt = 0; attempt < 10; attempt += 1) {
-    if (spawnSync('pgrep', ['-f', pattern]).status !== 0) return false;
+    if (process.platform === 'win32') {
+      const result = spawnSync(join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), [
+        '-NoProfile', '-NonInteractive', '-Command',
+        `@(Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" | Where-Object { $_.CommandLine -like '*${pattern}*' }).Count`,
+      ], { encoding: 'utf8', windowsHide: true });
+      assert.equal(result.status, 0, result.stderr);
+      if (Number(result.stdout.trim()) === 0) return false;
+    } else if (spawnSync('pgrep', ['-f', pattern]).status !== 0) return false;
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
   }
   return true;
@@ -28,8 +35,19 @@ function tempDir(t, prefix) {
   return dir;
 }
 
-function fakeBin(dir, name, script) {
+function fakeBin(dir, name, script, windowsScript) {
   const file = join(dir, name);
+  if (process.platform === 'win32') {
+    assert.equal(typeof windowsScript, 'string');
+    writeFileSync(`${file}.cjs`, `const args = process.argv.slice(2);
+const reply = (text, code = 0) => { require('node:fs').writeSync(1, text + '\\n'); process.exit(code); };
+const log = (file, text = args.join(' ')) => require('node:fs').appendFileSync(file, text + '\\n');
+const sleep = () => require('node:child_process').spawn(process.execPath,
+  ['-e', 'setTimeout(() => {}, ${SLEEP_MARK * 1000})', 'sleep ${SLEEP_MARK}'], { stdio: 'inherit' });
+${windowsScript}\n`);
+    writeFileSync(`${file}.cmd`, `@echo off\r\n"${process.execPath}" "%~dp0${name}.cjs" %*\r\n`);
+    return;
+  }
   writeFileSync(file, `#!/bin/sh\n${script}\n`);
   chmodSync(file, 0o755);
 }
@@ -40,7 +58,10 @@ function fakeGh(dir) {
     'if [ "$1" = "--version" ]; then echo "gh version 2.70.0 (2026-01-01)"; exit 0; fi',
     `if [ "$1" = "auth" ]; then echo "Logged in to github.com account test (${SECRET})"; exit 0; fi`,
     'exit 1',
-  ].join('\n'));
+  ].join('\n'), `
+if (args[0] === '--version') reply('gh version 2.70.0 (2026-01-01)');
+if (args[0] === 'auth') reply('Logged in to github.com account test (${SECRET})');
+process.exit(1);`);
 }
 
 function run(args, env = {}) {
@@ -101,11 +122,15 @@ test('a CLI that says it is not authenticated is not logged in', (t) => {
   fakeBin(bin, 'wrangler', [
     'if [ "$1" = "--version" ]; then echo "4.20.1"; exit 0; fi',
     'echo "You are not authenticated. Please run wrangler login."; exit 0',
-  ].join('\n'));
+  ].join('\n'), `
+if (args[0] === '--version') reply('4.20.1');
+reply('You are not authenticated. Please run wrangler login.');`);
   fakeBin(bin, 'vercel', [
     'if [ "$1" = "--version" ]; then echo "Vercel CLI 44.2.0"; exit 0; fi',
     'echo "Error: not logged in" >&2; exit 1',
-  ].join('\n'));
+  ].join('\n'), `
+if (args[0] === '--version') reply('Vercel CLI 44.2.0');
+console.error('Error: not logged in'); process.exit(1);`);
   const report = runJson(['--home', home, '--path-env', bin]);
   assert.deepEqual(report.tools.wrangler, { present: true, version: '4.20.1', loggedIn: false, via: 'path' });
   assert.deepEqual(report.tools.vercel, { present: true, version: '44.2.0', loggedIn: false, via: 'path', scope: null });
@@ -120,7 +145,12 @@ function fakeNpx(dir, log) {
     'if [ "$2" = "vercel" ] && [ "$3" = "--version" ]; then echo "Vercel CLI 50.1.0"; exit 0; fi',
     'if [ "$2" = "vercel" ] && [ "$3" = "whoami" ]; then echo "fixture-user"; exit 0; fi',
     'echo "npm error could not determine executable to run" >&2; exit 1',
-  ].join('\n'));
+  ].join('\n'), `
+log(${JSON.stringify(log)});
+if (args[0] !== '--no-install') reply('would install', 9);
+if (args[1] === 'vercel' && args[2] === '--version') reply('Vercel CLI 50.1.0');
+if (args[1] === 'vercel' && args[2] === 'whoami') reply('fixture-user');
+console.error('npm error could not determine executable to run'); process.exit(1);`);
 }
 
 test('vercel and wrangler are found through npx --no-install, then on PATH', (t) => {
@@ -131,7 +161,9 @@ test('vercel and wrangler are found through npx --no-install, then on PATH', (t)
   fakeBin(bin, 'wrangler', [
     'if [ "$1" = "--version" ]; then echo "4.20.1"; exit 0; fi',
     'echo "you@example.com"; exit 0',
-  ].join('\n'));
+  ].join('\n'), `
+if (args[0] === '--version') reply('4.20.1');
+reply('you@example.com');`);
   const report = runJson(['--home', home, '--path-env', bin]);
   assert.deepEqual(report.tools.vercel, { present: true, version: '50.1.0', loggedIn: true, via: 'npx', scope: null });
   assert.deepEqual(report.tools.wrangler, { present: true, version: '4.20.1', loggedIn: true, via: 'path' });
@@ -160,7 +192,17 @@ function fakeTeamsNpx(dir, log, { current = false, teams = 'ok' } = {}) {
     'fi',
     `if [ "$2" = "vercel" ] && [ "$3" = "api" ]; then echo '{"status":"action_required","reason":"missing_scope"}'; exit 1; fi`,
     'echo "npm error could not determine executable to run" >&2; exit 1',
-  ].join('\n'));
+  ].join('\n'), `
+log(${JSON.stringify(log)});
+if (args[1] !== 'vercel') reply('npm error could not determine executable to run', 1);
+if (args[2] === '--version') reply('Vercel CLI 65.1.0');
+if (args[2] === 'whoami') reply('fixture-user');
+if (args[2] === 'teams' && ${JSON.stringify(teams)} !== 'ok') reply('Error: offline', 1);
+if (args[2] === 'teams' && args[3] === 'ls' && args[4] === '--json') reply(${JSON.stringify(list)});
+if (args[2] === 'api' && args[3] === '/v2/user' && args[4] === '--scope')
+  reply('{"user":{"id":"u1","username":"fixture-user","email":"user@example.com","defaultTeamId":"team_personal"}}');
+if (args[2] === 'api') reply('{"status":"action_required","reason":"missing_scope"}', 1);
+process.exit(1);`);
 }
 
 test('vercel.scope is the default team slug: from teams ls when one is current, else the user\'s defaultTeamId', (t) => {
@@ -207,7 +249,15 @@ function fakeLoggedOutNpx(dir, log, exitCode) {
     `  exit ${exitCode}`,
     'fi',
     'echo "npm error could not determine executable to run" >&2; exit 1',
-  ].join('\n'));
+  ].join('\n'), `
+log(${JSON.stringify(log)}, args.join(' ') + ' HOME=' + (process.env.HOME ?? ''));
+if (args[1] === 'vercel' && args[2] === '--version') reply('Vercel CLI 65.1.0');
+if (args[1] === 'vercel' && args[2] === 'whoami') {
+  const answer = require('node:fs').readFileSync(0, 'utf8');
+  if (answer) console.log('read stdin: ' + answer.trim());
+  reply('> Logged out.', ${exitCode});
+}
+console.error('npm error could not determine executable to run'); process.exit(1);`);
 }
 
 test('a logged-out vercel (exit 1, "> Logged out.") is present and not logged in, probed with the real HOME', (t) => {
@@ -235,7 +285,8 @@ test('a hanging login probe times out instead of blocking', { timeout: 30000 }, 
   const home = tempDir(t, 'preflight-home-');
   // Not exec: the sleep is a grandchild holding the output pipe, so the whole group must die.
   // The odd duration lets pgrep find exactly this sleep afterwards.
-  fakeBin(bin, 'vercel', `if [ "$1" = "--version" ]; then echo "44.2.0"; exit 0; fi\n/bin/sleep ${SLEEP_MARK}\nexit 0`);
+  fakeBin(bin, 'vercel', `if [ "$1" = "--version" ]; then echo "44.2.0"; exit 0; fi\n/bin/sleep ${SLEEP_MARK}\nexit 0`,
+    `if (args[0] === '--version') reply('44.2.0'); sleep();`);
   const started = Date.now();
   const report = runJson(['--home', home, '--path-env', bin], { PREFLIGHT_PROBE_TIMEOUT_MS: '1000' });
   const elapsed = Date.now() - started;
@@ -249,7 +300,8 @@ test('a hanging login probe times out instead of blocking', { timeout: 30000 }, 
 test('a login probe with no answer is reported as timed out, not logged out, with the command to run', { timeout: 30000 }, (t) => {
   const bin = tempDir(t, 'preflight-bin-');
   const home = tempDir(t, 'preflight-home-');
-  fakeBin(bin, 'vercel', `if [ "$1" = "--version" ]; then echo "44.2.0"; exit 0; fi\n/bin/sleep ${SLEEP_MARK}\nexit 0`);
+  fakeBin(bin, 'vercel', `if [ "$1" = "--version" ]; then echo "44.2.0"; exit 0; fi\n/bin/sleep ${SLEEP_MARK}\nexit 0`,
+    `if (args[0] === '--version') reply('44.2.0'); sleep();`);
   const env = { PREFLIGHT_PROBE_TIMEOUT_MS: '1000' };
   const report = runJson(['--home', home, '--path-env', bin], env);
   assert.deepEqual(report.tools.vercel, { present: true, version: '44.2.0', loggedIn: false, timedOut: true, via: 'path', scope: null });
@@ -264,7 +316,8 @@ test('a login probe with no answer is reported as timed out, not logged out, wit
 test('a cold npx that does not answer in time is "unknown", never "missing"', { timeout: 30000 }, (t) => {
   const bin = tempDir(t, 'preflight-bin-');
   const home = tempDir(t, 'preflight-home-');
-  fakeBin(bin, 'npx', `if [ "$2" = "vercel" ]; then /bin/sleep ${SLEEP_MARK}; fi\nexit 1`);
+  fakeBin(bin, 'npx', `if [ "$2" = "vercel" ]; then /bin/sleep ${SLEEP_MARK}; fi\nexit 1`,
+    `if (args[1] === 'vercel') sleep(); else process.exit(1);`);
   const env = { PREFLIGHT_PROBE_TIMEOUT_MS: '1000' };
   assert.deepEqual(runJson(['--home', home, '--path-env', bin], env).tools.vercel, { present: false, version: null, loggedIn: false, timedOut: true, via: null, scope: null });
   const text = run(['--home', home, '--path-env', bin], env);
@@ -276,7 +329,8 @@ test('a cold npx that does not answer in time is "unknown", never "missing"', { 
 test('a CLI found on PATH (gh) is named without npx in the no-answer line', { timeout: 30000 }, (t) => {
   const bin = tempDir(t, 'preflight-bin-');
   const home = tempDir(t, 'preflight-home-');
-  fakeBin(bin, 'gh', `if [ "$1" = "--version" ]; then echo "gh version 2.70.0"; exit 0; fi\n/bin/sleep ${SLEEP_MARK}\nexit 0`);
+  fakeBin(bin, 'gh', `if [ "$1" = "--version" ]; then echo "gh version 2.70.0"; exit 0; fi\n/bin/sleep ${SLEEP_MARK}\nexit 0`,
+    `if (args[0] === '--version') reply('gh version 2.70.0'); sleep();`);
   const text = run(['--home', home, '--path-env', bin], { PREFLIGHT_PROBE_TIMEOUT_MS: '1000' });
   assert.match(text.stdout, /^gh: no answer in 1 s; run `gh auth status` yourself$/m);
   assert.equal(strayProcess(`sleep ${SLEEP_MARK}`), false);
