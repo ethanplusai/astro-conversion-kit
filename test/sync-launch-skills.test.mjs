@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync, execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, copyFileSync, readFileSync, appendFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, copyFileSync, readFileSync, readdirSync, appendFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const KIT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -19,8 +19,9 @@ function run(dir, script, ...args) {
   return spawnSync(process.execPath, [join(dir, script), ...args], { cwd: dir, encoding: 'utf8' });
 }
 
+// Every node_modules folder under dir, one per line ('' when there is none).
 function findNodeModules(dir) {
-  return execFileSync('find', [dir, '-name', 'node_modules'], { encoding: 'utf8' }).trim();
+  return readdirSync(dir, { recursive: true }).filter((path) => basename(path) === 'node_modules').join('\n');
 }
 
 test('sync-launch-skills vendors the three launch skills at the locked sha', async (t) => {
