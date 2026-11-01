@@ -2,7 +2,7 @@
 // Preflight: what this machine has (Node, git, gh, vercel, wrangler, Playwright chromium)
 // and a rough read of how experienced the person running the conversion is.
 // Login probes report a boolean only: their output is inspected, never printed or stored.
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { accessSync, constants, existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
@@ -78,13 +78,16 @@ function parseArgs(argv) {
 function findBinary(name, pathEnv) {
   for (const dir of pathEnv.split(delimiter)) {
     if (!dir) continue;
-    const file = join(dir, name);
-    try {
-      if (!statSync(file).isFile()) continue;
-      accessSync(file, constants.X_OK);
-      return file;
-    } catch {
-      // not here
+    const extensions = process.platform === 'win32' ? ['.exe', '.com', '.cmd', '.bat'] : [''];
+    for (const extension of extensions) {
+      const file = join(dir, name + extension);
+      try {
+        if (!statSync(file).isFile()) continue;
+        accessSync(file, constants.X_OK);
+        return file;
+      } catch {
+        // not here
+      }
     }
   }
   return null;
@@ -104,11 +107,20 @@ function probe(file, args, pathEnv) {
     };
     let child;
     try {
-      child = spawn(file, args, {
+      const options = {
         env: { ...process.env, PATH: pathEnv, NO_COLOR: '1', GH_PROMPT_DISABLED: '1', CI: '1' },
         stdio: ['ignore', 'pipe', 'pipe'],
-        detached: true,
-      });
+        detached: process.platform !== 'win32',
+        windowsHide: true,
+      };
+      if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(file)) {
+        // A .cmd or .bat file starts only through a shell. Probe arguments are flags, CLI names or
+        // team slugs, never shell syntax, so they are checked and joined into one command line.
+        if (/["%]/.test(file) || args.some((arg) => !/^[\w@./:=+-]+$/.test(arg))) throw new Error('unsafe CLI argument');
+        child = spawn(`"${file}" ${args.join(' ')}`, { ...options, shell: true });
+      } else {
+        child = spawn(file, args, options);
+      }
     } catch {
       resolve({ code: null, output: '' });
       return;
@@ -122,7 +134,13 @@ function probe(file, args, pathEnv) {
     child.on('close', (code) => finish(code));
     const timer = setTimeout(() => {
       try {
-        process.kill(-child.pid, 'SIGKILL');
+        if (process.platform === 'win32') {
+          execFileSync(join(process.env.SystemRoot, 'System32', 'taskkill.exe'), ['/pid', String(child.pid), '/t', '/f'], {
+            stdio: 'ignore', windowsHide: true, timeout: 5000,
+          });
+        } else {
+          process.kill(-child.pid, 'SIGKILL');
+        }
       } catch {
         child.kill('SIGKILL');
       }
