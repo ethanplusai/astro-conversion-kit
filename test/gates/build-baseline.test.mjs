@@ -366,7 +366,7 @@ test('a capture without feeds or scripts warns and still builds; without wp-rest
   for (const p of ['feeds', 'scripts.json', 'wp-rest']) rmSync(join(copy, p), { recursive: true });
   const result = await build(['--capture', copy, '--out', out]);
   assert.equal(result.code, 0, result.stderr);
-  const warnings = result.stderr.trim().split('\n');
+  const warnings = (process.platform === 'win32' ? result.stderr.replaceAll('\\', '/') : result.stderr).trim().split('\n');
   assert.equal(warnings.length, 2);
   assert.match(warnings[0], /warning: no feeds\/index\.json/);
   assert.match(warnings[1], /warning: no scripts\.json/);

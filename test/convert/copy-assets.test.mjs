@@ -124,7 +124,7 @@ test('a listed file missing from the capture exits 1 and names it; the rest is s
   rmSync(join(dir, 'capture', 'js', reveal.file));
   const result = await copy(dir);
   assert.equal(result.code, 1);
-  assert.match(result.stderr, new RegExp(`missing: .*js/${reveal.file.replace('.', '\\.')}`));
+  assert.match(process.platform === 'win32' ? result.stderr.replaceAll('\\', '/') : result.stderr, new RegExp(`missing: .*js/${reveal.file.replace('.', '\\.')}`));
   assert.ok(existsSync(join(dir, 'public', 'wp-content/themes/fixture/js/view.js')));
 });
 

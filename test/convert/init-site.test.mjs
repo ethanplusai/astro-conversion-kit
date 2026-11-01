@@ -5,7 +5,7 @@ import {
   mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, cpSync, existsSync, statSync, symlinkSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname, relative } from 'node:path';
+import { join, dirname, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -94,7 +94,7 @@ function walk(dir, base = dir) {
   return readdirSync(dir).flatMap((name) => {
     if (name === '.git') return [];
     const full = join(dir, name);
-    return statSync(full).isDirectory() ? walk(full, base) : [relative(base, full)];
+    return statSync(full).isDirectory() ? walk(full, base) : [relative(base, full).split(sep).join('/')];
   });
 }
 
