@@ -5,7 +5,7 @@ import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, stat
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { PNG } from 'pngjs';
 import { startFixture } from '../fixture/serve.mjs';
 
@@ -24,7 +24,7 @@ async function run(path, args) {
 }
 const suggest = (args) => run('suggest-improvements/scripts/suggest.mjs', args);
 const readJson = (file) => JSON.parse(readFileSync(file, 'utf8'));
-const check = async (id) => (await import(join(CHECKS_DIR, `${id}.mjs`))).default;
+const check = async (id) => (await import(pathToFileURL(join(CHECKS_DIR, `${id}.mjs`)).href)).default;
 
 const MINIMUM = [
   'missing-h1', 'multiple-h1', 'duplicate-titles', 'missing-descriptions', 'long-titles', 'thin-pages',
@@ -157,7 +157,7 @@ test('every check file exports id, title, category and run, and the catalogue li
   const files = readdirSync(CHECKS_DIR).filter((n) => n.endsWith('.mjs'));
   const ids = [];
   for (const file of files) {
-    const c = (await import(join(CHECKS_DIR, file))).default;
+    const c = (await import(pathToFileURL(join(CHECKS_DIR, file)).href)).default;
     assert.equal(`${c.id}.mjs`, file);
     assert.equal(typeof c.title, 'string');
     assert.ok(CATEGORIES.includes(c.category), `${c.id} category`);
@@ -334,7 +334,7 @@ test('site-wide problems are one item across pages, with the page count in the e
 });
 
 test('a check that throws is isolated and listed as not covered; missing inputs are noted', async () => {
-  const { runChecks } = await import(skills('suggest-improvements/scripts/suggest.mjs'));
+  const { runChecks } = await import(pathToFileURL(skills('suggest-improvements/scripts/suggest.mjs')).href);
   const boom = { id: 'boom', title: 'Boom', category: 'seo', run: () => { throw new Error('bad input'); } };
   const fine = await check('missing-h1');
   const noWebp = await check('no-webp');
@@ -448,7 +448,7 @@ test('a check returning a malformed item is not covered and the run still exits 
 });
 
 test('a partial() that throws keeps the check items', async () => {
-  const { runChecks } = await import(skills('suggest-improvements/scripts/suggest.mjs'));
+  const { runChecks } = await import(pathToFileURL(skills('suggest-improvements/scripts/suggest.mjs')).href);
   const fine = await check('missing-h1');
   const flaky = { ...fine, partial: () => { throw new Error('odd'); } };
   const [result] = runChecks([flaky], ctx({ inventory: [page({ h1: [] })] }));
