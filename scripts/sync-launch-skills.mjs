@@ -80,7 +80,8 @@ function assertClean() {
 function checkout(repo, commit, dir) {
   git(dir, ['init', '-q']);
   git(dir, ['fetch', '-q', '--depth', '1', repo, commit]);
-  git(dir, ['-c', 'advice.detachedHead=false', 'checkout', '-q', 'FETCH_HEAD']);
+  // core.autocrlf=false keeps the line endings upstream committed (Git for Windows turns it on).
+  git(dir, ['-c', 'advice.detachedHead=false', '-c', 'core.autocrlf=false', 'checkout', '-q', 'FETCH_HEAD']);
   const head = git(dir, ['rev-parse', 'HEAD']);
   if (head !== commit) throw new UsageError(`Fetched ${head}, expected ${commit}`);
 }

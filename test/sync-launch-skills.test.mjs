@@ -43,8 +43,12 @@ test('sync-launch-skills vendors the three launch skills at the locked sha', asy
   git(dir, 'commit', '-q', '-m', 'chore: kit');
 
   const lock = JSON.parse(readFileSync(join(dir, 'launch-skills.lock.json'), 'utf8'));
-  // One real sync; every assertion below reads its result.
-  const sync = run(dir, 'scripts/sync-launch-skills.mjs');
+  // One real sync; every assertion below reads its result. It runs with core.autocrlf=true, which Git
+  // for Windows sets system-wide, so the line-ending check below holds on every platform.
+  const sync = spawnSync(process.execPath, [join(dir, 'scripts/sync-launch-skills.mjs')], {
+    cwd: dir, encoding: 'utf8',
+    env: { ...process.env, GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.autocrlf', GIT_CONFIG_VALUE_0: 'true' },
+  });
 
   await t.test('the lock names the upstream repo and a full sha', () => {
     assert.equal(lock.repo, 'https://github.com/ethanplusai/website-launch-skills');
@@ -66,6 +70,13 @@ test('sync-launch-skills vendors the three launch skills at the locked sha', asy
     }
     assert.ok(existsSync(join(dir, 'skills', 'launch-audit', 'scripts', 'lib')), 'launch-audit/scripts/lib/');
     assert.equal(findNodeModules(join(dir, 'skills')), '');
+  });
+
+  await t.test('the copies keep the line endings upstream committed, whatever core.autocrlf says', () => {
+    for (const skill of SKILLS) {
+      const text = readFileSync(join(dir, 'skills', skill, 'SKILL.md'), 'utf8');
+      assert.ok(!text.includes('\r\n'), `${skill}/SKILL.md came out with CRLF line endings`);
+    }
   });
 
   await t.test('pre-launch runs through the kit path', () => {
